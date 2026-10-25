@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from xau_agent.brokers.base import Broker, Fill, Position, Quote
+from xau_agent.config import Config
+from xau_agent.indicators import interval_delta, resample_ohlc
+
+BASE = 2000.0
+
+
+def flat_day(day: pd.Timestamp, base: float = BASE, half_range: float = 10.0) -> pd.DataFrame:
+    """96 x 15m bars that never close away from `base`: daily range 20, no breakout."""
+    idx = pd.date_range(day, periods=96, freq="15min", tz="UTC")
+    return pd.DataFrame(
+        {"open": base, "high": base + half_range, "low": base - half_range, "close": base}, index=idx
+    )
+
+
+def breakout_day(day: pd.Timestamp, side: str = "long", base: float = BASE) -> pd.DataFrame:
+    """Asian range 1996-2004, breakout candle at 07:15 closing at 2006 (or 1994), then runs to target."""
+    df = flat_day(day, base, half_range=4.0)
+    sign = 1 if side == "long" else -1
+    t = lambda hm: pd.Timestamp(f"{day.date()} {hm}", tz="UTC")  # noqa: E731
+    if side == "long":
+        df.loc[t("07:15"), ["open", "high", "low", "close"]] = [base, base + 6.5, base, base + 6]
+    else:
+        df.loc[t("07:15"), ["open", "high", "low", "close"]] = [base, base, base - 6.5, base - 6]
+    after = df.index > t("07:15")
+    df.loc[after, "close"] = base + sign * 6
+    df.loc[after, "open"] = base + sign * 6
+    df.loc[after, "high"] = base + sign * 6 + 1
+    df.loc[after, "low"] = base + sign * 6 - 1
+    # 09:00: price reaches the 2R target (entry 2006, stop 2000 -> target 2018).
+    df.loc[t("09:00"), "high" if side == "long" else "low"] = base + sign * 19
+    return df
+
+
+def history(days: int = 30, end: str = "2026-10-21") -> pd.DataFrame:
+    """`days` weekdays of flat 15m bars ending the day before `end`."""
+    end_day = pd.Timestamp(end, tz="UTC")
+    all_days = pd.bdate_range(end=end_day - pd.Timedelta(days=1), periods=days, tz="UTC")
+    return pd.concat([flat_day(d) for d in all_days])
+
+
+class FakeBroker(Broker):
+    """In-memory broker for tests. Candles are sliced to what is 'closed' at self.now."""
+
+    name = "fake"
+
+    def __init__(self, candles: pd.DataFrame, quote: Quote, equity: float = 10_000.0):
+        self._candles = candles
+        self._quote = quote
+        self._equity = equity
+        self._position: Position | None = None
+        self.orders: list[Fill] = []
+        self.closed = 0
+        self.now = candles.index[-1] + pd.Timedelta(minutes=15)
+
+    def candles(self, interval: str, limit: int) -> pd.DataFrame:
+        step = interval_delta(interval)
+        df = self._candles
+        if interval != "15m":
+            df = resample_ohlc(df, step)
+        return df[df.index + step <= self.now].tail(limit)
+
+    def quote(self) -> Quote:
+        return self._quote
+
+    def equity(self) -> float:
+        return self._equity
+
+    def position(self):
+        return self._position
+
+    def size_for_risk(self, risk_amount, entry, stop):
+        return round(risk_amount / abs(entry - stop), 3)
+
+    def notional(self, size, price):
+        return size * price
+
+    def open_with_bracket(self, side, size, stop, take_profit):
+        fill = Fill(side, size, self._quote.ask if side == "long" else self._quote.bid, stop, take_profit)
+        self.orders.append(fill)
+        self._position = Position(side, size, fill.price)
+        return fill
+
+    def close_all(self):
+        if self._position:
+            self.closed += 1
+        self._position = None
+
+
+@pytest.fixture
+def cfg(tmp_path) -> Config:
+    c = Config()
+    c.data_dir = str(tmp_path / "data")
+    return c

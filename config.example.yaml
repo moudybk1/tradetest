@@ -1,0 +1,87 @@
+# Copy this file to config.yaml and edit it. Secrets (keys, passwords) go in .env, never here.
+
+# paper = real market prices, simulated orders (no money at risk). Start here.
+# live  = real orders. Also requires running with the --live flag.
+mode: paper
+
+# hyperliquid | mt5
+broker: hyperliquid
+
+hyperliquid:
+  # PAXG is a gold-backed token (1 PAXG = 1 troy ounce). Builder-deployed (HIP-3) gold
+  # markets use the "dex:NAME" form, e.g. "xyz:GOLD" - check the Hyperliquid app for the exact name.
+  coin: PAXG
+  # true = send live orders to the Hyperliquid testnet instead of mainnet.
+  testnet: true
+  leverage: 5
+  cross_margin: true
+  # Max slippage for market orders (0.003 = 0.3%).
+  slippage: 0.003
+
+mt5:
+  # Broker symbol names differ: XAUUSD, XAUUSD.m, XAUUSDm, GOLD ... check Market Watch.
+  symbol: XAUUSD
+  # Tag so the bot only touches its own positions.
+  magic: 240925
+  deviation_points: 30
+  # MT5 candle times are in broker server time. null = auto-detect from the live tick.
+  server_utc_offset_hours: null
+
+strategy:
+  # Asian range breakout. All times are UTC.
+  timeframe: 15m
+  asian_start_utc: "00:00"
+  asian_end_utc: "07:00"
+  # No new entries after this time.
+  entry_end_utc: "16:00"
+  # Close any open position at this time (before the daily rollover / spread widening).
+  flatten_utc: "20:30"
+  weekdays_only: true
+  atr_period: 14
+  # Skip the day if the Asian range is wider than this many daily ATRs (already moved too much)...
+  max_range_atr: 1.2
+  # ...or narrower than this (dead market, false breakouts).
+  min_range_atr: 0.15
+  # A candle must CLOSE this far beyond the range (in daily ATRs) to count as a breakout.
+  breakout_buffer_atr: 0.02
+  # mid = stop at the middle of the Asian range, opposite = stop at the other side.
+  stop_mode: mid
+  # Stop is never closer than this many daily ATRs from entry.
+  min_stop_atr: 0.1
+  reward_risk: 2.0
+
+risk:
+  # % of account equity lost if the stop is hit. Position size is calculated from this.
+  risk_per_trade_pct: 0.5
+  # Stop opening trades for the rest of the UTC day after losing this % of the day's starting equity.
+  max_daily_loss_pct: 2.0
+  max_open_positions: 1
+  max_trades_per_day: 1
+  # Skip entry if spread is wider than this (basis points; 10 bps = 0.10%).
+  max_spread_bps: 8
+  # Skip entry if position notional would exceed equity x this.
+  max_leverage: 5
+  # No new entries this many minutes before/after high-impact USD news.
+  news_blackout_before_min: 15
+  news_blackout_after_min: 15
+  # Fail safe: if the economic calendar can't be loaded, don't trade.
+  block_if_calendar_unavailable: true
+
+agent:
+  # true = Claude reviews every signal and can veto it. false = trade every valid signal.
+  enabled: true
+  model: claude-opus-5-5
+  # low | medium | high | xhigh | max
+  effort: medium
+  # Only take the trade if the agent says "take" with at least this confidence (0-1).
+  min_confidence: 0.6
+  # Let the agent search the web for gold / USD news before deciding.
+  news_search: true
+
+paper:
+  starting_equity: 10000
+  # Simulated fee per side in basis points (Hyperliquid base taker fee is about 4.5 bps).
+  fee_bps: 4.5
+
+poll_seconds: 20
+data_dir: data
