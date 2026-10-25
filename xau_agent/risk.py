@@ -17,6 +17,7 @@ class RiskState:
     # True = inside a news blackout, False = clear, None = calendar unavailable.
     news_blackout: bool | None
     news_events: list[str] = field(default_factory=list)
+    spread_pips: float | None = None
 
 
 def daily_loss_pct(state: RiskState) -> float:
@@ -39,6 +40,8 @@ def pre_trade_blocks(cfg: RiskConfig, state: RiskState) -> list[str]:
         blocks.append(f"max trades per day reached ({state.trades_today})")
     if state.spread_bps > cfg.max_spread_bps:
         blocks.append(f"spread too wide ({state.spread_bps:.1f} bps > {cfg.max_spread_bps} bps)")
+    if cfg.max_spread_pips is not None and state.spread_pips is not None and state.spread_pips > cfg.max_spread_pips:
+        blocks.append(f"spread too wide ({state.spread_pips:.1f} pips > {cfg.max_spread_pips} pips)")
     if state.news_blackout:
         blocks.append("high-impact news blackout: " + "; ".join(state.news_events))
     elif state.news_blackout is None and cfg.block_if_calendar_unavailable:

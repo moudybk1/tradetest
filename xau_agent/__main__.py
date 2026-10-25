@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -39,26 +40,21 @@ def cmd_check(args) -> None:
 
     from .brokers.paper import PaperBroker
     from .econ_calendar import EconomicCalendar
-    from .indicators import daily_atr
+    from .indicators import daily_atr, interval_delta
     from .risk import risk_amount
-    from .strategy import asian_range, find_breakout
+    from .strategy import day_candles, get_strategy
 
     cfg = load_config(args.config)
     setup_logging(cfg)
-    if cfg.broker == "hyperliquid":
-        from .brokers.hyperliquid import HyperliquidBroker
-
-        data = HyperliquidBroker(cfg.hyperliquid, trading=False)
-    else:
-        from .brokers.mt5 import MT5Broker
-
-        data = MT5Broker(cfg.mt5)
+    data = data_broker(cfg)
 
     now = datetime.now(timezone.utc)
     today = pd.Timestamp(now).normalize()
     q = data.quote()
-    print(f"mode={cfg.mode} broker={cfg.broker} now={now:%Y-%m-%d %H:%M} UTC")
-    print(f"quote bid={q.bid:.2f} ask={q.ask:.2f} spread={q.spread_bps:.2f} bps (max {cfg.risk.max_spread_bps})")
+    s, r = cfg.strategy, cfg.risk
+    print(f"mode={cfg.mode} broker={cfg.broker} strategy={s.name} timeframe={s.timeframe} now={now:%Y-%m-%d %H:%M} UTC")
+    print(f"quote bid={q.bid:.2f} ask={q.ask:.2f} spread={(q.ask - q.bid) / s.pip_size:.1f} pips "
+          f"({q.spread_bps:.2f} bps, max {r.max_spread_bps})")
 
     if cfg.mode == "live":
         equity = data.equity()
@@ -68,25 +64,22 @@ def cmd_check(args) -> None:
         equity = paper.equity()
         print(f"paper equity: {equity:,.2f}  open position: {paper.position()}")
 
-    candles = data.candles(cfg.strategy.timeframe, 200)
+    candles = data.candles(s.timeframe, int(pd.Timedelta(days=1) / interval_delta(s.timeframe)) + 300)
     hourly = data.candles("1h", 24 * 45)
-    atr = daily_atr(hourly, cfg.strategy.atr_period, today)
-    print(f"last closed {cfg.strategy.timeframe} candle: {candles.index[-1]}  daily ATR: {atr}")
-    rng = asian_range(candles, today, cfg.strategy)
-    if rng and atr:
-        width = (rng[0] - rng[1]) / atr
-        print(f"today's Asian range: {rng[1]:.2f} - {rng[0]:.2f} ({width:.2f} x ATR, "
-              f"allowed {cfg.strategy.min_range_atr}-{cfg.strategy.max_range_atr})")
-        sig = find_breakout(candles, today, atr, cfg.strategy)
-        if sig:
-            size = data.size_for_risk(risk_amount(cfg.risk, equity), sig.entry, sig.stop)
-            print(f"today's breakout: {sig.side} at {sig.candle_time:%H:%M} entry {sig.entry:.2f} "
-                  f"stop {sig.stop:.2f} tp {sig.take_profit:.2f} -> size at "
-                  f"{cfg.risk.risk_per_trade_pct}% risk = {size}")
+    atr = daily_atr(hourly, s.atr_period, today)
+    print(f"last closed {s.timeframe} candle: {candles.index[-1]}  daily ATR: {atr}")
+    strategy = get_strategy(s.name)
+    signals = strategy.day_signals(day_candles(strategy.prepare(candles, hourly, cfg), today), today, atr, cfg)
+    for sig in signals:
+        if r.sizing == "fixed_lots":
+            size = data.size_from_lots(r.fixed_lots, r.contract_oz)
         else:
-            print("no breakout signal yet today")
-    else:
-        print("Asian range not available yet (before 07:00 UTC, weekend, or missing data)")
+            size = data.size_for_risk(risk_amount(r, equity), sig.entry, sig.stop)
+        risk_usd = data.risk_usd(size, sig.entry, sig.stop) if size else 0.0
+        print(f"signal today: {sig.side} at {sig.candle_time:%H:%M} UTC entry {sig.entry:.2f} SL {sig.stop:.2f} "
+              f"TP {sig.take_profit:.2f} -> size {size}, risk ${risk_usd:,.2f}")
+    if not signals:
+        print("no signal yet today")
 
     cal = EconomicCalendar(cfg.data_path / "calendar_cache.json")
     blackout, hits = cal.blackout(now, cfg.risk.news_blackout_before_min, cfg.risk.news_blackout_after_min)
@@ -97,21 +90,100 @@ def cmd_check(args) -> None:
           f"ANTHROPIC_API_KEY set={bool(os.getenv('ANTHROPIC_API_KEY'))}")
 
 
+def data_broker(cfg):
+    """Read-only market data connection (never sends orders)."""
+    if cfg.broker == "hyperliquid":
+        from .brokers.hyperliquid import HyperliquidBroker
+
+        return HyperliquidBroker(cfg.hyperliquid, trading=False)
+    from .brokers.mt5 import MT5Broker
+
+    return MT5Broker(cfg.mt5)
+
+
+def _load_candles(args, cfg):
+    from .backtest import fetch_hyperliquid, load_csv
+
+    if args.csv:
+        candles = load_csv(args.csv, args.server_utc_offset, args.point)
+    else:
+        candles = fetch_hyperliquid(cfg.hyperliquid.coin, "1m" if args.hyperliquid_days <= 3 else "5m",
+                                    args.hyperliquid_days)
+    step = candles.index.to_series().diff().median()
+    spread = "real spread from data" if "spread" in candles.columns else f"fixed spread {args.spread_pips} pips"
+    print(f"{len(candles):,} candles ({step}) from {candles.index[0]} to {candles.index[-1]}, {spread}")
+    return candles
+
+
+def _costs(args):
+    from .backtest import Costs
+
+    return Costs(args.spread_pips, args.slippage_pips, args.commission)
+
+
+def _print_stats(title: str, stats: dict) -> None:
+    print(f"\n=== {title} ===")
+    print(json.dumps(stats, indent=2, default=str))
+
+
 def cmd_backtest(args) -> None:
-    from .backtest import fetch_hyperliquid, load_csv, run_backtest
+    from .backtest import monthly, run_backtest, split_stats
 
     cfg = load_config(args.config)
-    s = cfg.strategy
-    if args.csv:
-        candles = load_csv(args.csv, s.timeframe)
-    else:
-        candles = fetch_hyperliquid(cfg.hyperliquid.coin, s.timeframe, args.hyperliquid_days)
-    print(f"{len(candles)} candles from {candles.index[0]} to {candles.index[-1]}")
-    trades, stats = run_backtest(candles, s, args.cost_bps, cfg.risk.risk_per_trade_pct)
-    print(json.dumps(stats, indent=2, default=str))
+    name = args.strategy or cfg.strategy.name
+    lots = args.lots if args.lots is not None else cfg.risk.fixed_lots
+    trades, stats = run_backtest(_load_candles(args, cfg), cfg, _costs(args), name, lots)
+    _print_stats(f"{name} | {cfg.strategy.timeframe} | SL {cfg.strategy.sl_pips} / TP {cfg.strategy.tp_pips} pips "
+                 f"| {lots} lot", stats)
+    if args.split and not trades.empty:
+        for label, part in split_stats(trades, args.split, cfg, lots).items():
+            _print_stats(f"{label} ({'before' if label == 'in_sample' else 'from'} {args.split})", part)
+    if not trades.empty:
+        print("\nnet $ per month:")
+        print(monthly(trades).to_string())
     if args.trades_out and not trades.empty:
         trades.to_csv(args.trades_out, index=False)
         print(f"trades written to {args.trades_out}")
+
+
+def cmd_compare(args) -> None:
+    """Run every strategy on the same data and costs, side by side."""
+    from .backtest import run_backtest, split_stats
+    from .config import STRATEGIES
+
+    cfg = load_config(args.config)
+    candles = _load_candles(args, cfg)
+    lots = args.lots if args.lots is not None else cfg.risk.fixed_lots
+    rows = []
+    for name in STRATEGIES:
+        trades, st = run_backtest(candles, cfg, _costs(args), name, lots)
+        row = {"strategy": name, "trades": st.get("trades", 0), "per_week": st.get("trades_per_week"),
+               "win%": st.get("win_rate_pct"), "breakeven%": st.get("breakeven_win_rate_pct"),
+               "net_$": st.get(f"net_usd_at_{lots}_lot"), "PF": st.get("profit_factor"),
+               "max_DD_$": st.get("max_drawdown_usd"), "lose_streak": st.get("worst_losing_streak")}
+        if args.split and not trades.empty:
+            oos = split_stats(trades, args.split, cfg, lots)["out_of_sample"]
+            row["OOS_trades"] = oos.get("trades", 0)
+            row["OOS_win%"] = oos.get("win_rate_pct")
+            row["OOS_net_$"] = oos.get(f"net_usd_at_{lots}_lot")
+        rows.append(row)
+    s = cfg.strategy
+    print(f"\n{s.timeframe} signals | SL {s.sl_pips} / TP {s.tp_pips} pips | {lots} lot | "
+          f"max {cfg.risk.max_trades_per_day} trades/day | flatten {s.flatten_utc:%H:%M} UTC")
+    print(pd.DataFrame(rows).set_index("strategy").to_string())
+
+
+def cmd_export_mt5(args) -> None:
+    """Download M1 (or other) history with real spreads from your MT5 terminal to CSV (Windows)."""
+    from .brokers.mt5 import MT5Broker
+
+    cfg = load_config(args.config)
+    broker = MT5Broker(cfg.mt5)
+    end = pd.Timestamp.now(tz="UTC")
+    df = broker.history(args.interval, end - pd.Timedelta(days=args.days), end)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(args.out)
+    print(f"saved {len(df):,} {args.interval} bars ({df.index[0]} -> {df.index[-1]}, UTC) to {args.out}")
 
 
 def cmd_kill(args) -> None:
@@ -144,13 +216,34 @@ def main() -> None:
 
     sub.add_parser("check", help="read-only status check, places no orders").set_defaults(func=cmd_check)
 
-    p = sub.add_parser("backtest", help="backtest the breakout rules")
-    src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--csv", help="OHLC candles CSV in UTC (e.g. Dukascopy XAUUSD export)")
-    src.add_argument("--hyperliquid-days", type=int, help="download this many recent days from Hyperliquid")
-    p.add_argument("--cost-bps", type=float, default=5.0, help="round-trip cost (spread+fees) in bps")
+    def data_args(p):
+        src = p.add_mutually_exclusive_group(required=True)
+        src.add_argument("--csv", help="candles CSV: export-mt5 output, MT5 'Export Bars' file or Dukascopy (M1 best)")
+        src.add_argument("--hyperliquid-days", type=int, help="download this many recent days from Hyperliquid")
+        p.add_argument("--server-utc-offset", type=float, default=0.0,
+                       help="hours to subtract when the CSV is in broker server time (MT5 Export Bars: often 2 or 3)")
+        p.add_argument("--point", type=float, default=0.01, help="price of 1 point, to convert a spread column")
+        p.add_argument("--spread-pips", type=float, default=3.0, help="spread when the data has no spread column")
+        p.add_argument("--slippage-pips", type=float, default=0.5, help="extra pips lost per trade")
+        p.add_argument("--commission", type=float, default=0.0, help="round-turn commission in $ per 1.0 lot")
+        p.add_argument("--lots", type=float, help="lot size for $ results (default: risk.fixed_lots)")
+        p.add_argument("--split", help="YYYY-MM-DD: also report results before/after this date (out-of-sample)")
+
+    p = sub.add_parser("backtest", help="backtest one strategy")
+    data_args(p)
+    p.add_argument("--strategy", help="override strategy.name from config")
     p.add_argument("--trades-out", help="write every trade to this CSV")
     p.set_defaults(func=cmd_backtest)
+
+    p = sub.add_parser("compare", help="backtest all strategies side by side")
+    data_args(p)
+    p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("export-mt5", help="save MT5 history (with real spread) to CSV for backtesting")
+    p.add_argument("--days", type=int, default=365)
+    p.add_argument("--interval", default="1m")
+    p.add_argument("--out", default="data/xauusd_m1.csv")
+    p.set_defaults(func=cmd_export_mt5)
 
     sub.add_parser("kill", help="close everything and stop the running bot").set_defaults(func=cmd_kill)
 

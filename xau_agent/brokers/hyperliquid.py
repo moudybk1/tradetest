@@ -126,6 +126,10 @@ class HyperliquidBroker(Broker):
     def notional(self, size: float, price: float) -> float:
         return size * price
 
+    def size_from_lots(self, lots: float, contract_oz: float) -> float:
+        factor = 10**self.sz_decimals
+        return round(math.floor(lots * contract_oz * factor + 1e-9) / factor, self.sz_decimals)
+
     def round_px(self, px: float) -> float:
         # Hyperliquid perps: max 5 significant figures and max (6 - szDecimals) decimals.
         return round(float(f"{px:.5g}"), 6 - self.sz_decimals)

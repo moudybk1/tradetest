@@ -4,19 +4,8 @@
 # live  = real orders. Also requires running with the --live flag.
 mode: paper
 
-# hyperliquid | mt5
-broker: hyperliquid
-
-hyperliquid:
-  # PAXG is a gold-backed token (1 PAXG = 1 troy ounce). Builder-deployed (HIP-3) gold
-  # markets use the "dex:NAME" form, e.g. "xyz:GOLD" - check the Hyperliquid app for the exact name.
-  coin: PAXG
-  # true = send live orders to the Hyperliquid testnet instead of mainnet.
-  testnet: true
-  leverage: 5
-  cross_margin: true
-  # Max slippage for market orders (0.003 = 0.3%).
-  slippage: 0.003
+# mt5 | hyperliquid
+broker: mt5
 
 mt5:
   # Broker symbol names differ: XAUUSD, XAUUSD.m, XAUUSDm, GOLD ... check Market Watch.
@@ -27,44 +16,93 @@ mt5:
   # MT5 candle times are in broker server time. null = auto-detect from the live tick.
   server_utc_offset_hours: null
 
+hyperliquid:
+  # PAXG is a gold-backed token (1 PAXG = 1 troy ounce). Builder-deployed (HIP-3) gold
+  # markets use the "dex:NAME" form, e.g. "xyz:GOLD" - check the Hyperliquid app for the exact name.
+  coin: PAXG
+  testnet: true
+  leverage: 5
+  cross_margin: true
+  slippage: 0.003
+
 strategy:
-  # Asian range breakout. All times are UTC.
-  timeframe: 15m
-  asian_start_utc: "00:00"
-  asian_end_utc: "07:00"
-  # No new entries after this time.
-  entry_end_utc: "16:00"
-  # Close any open position at this time (before the daily rollover / spread widening).
+  # asian_breakout | ny_orb | asian_sweep | trend_pullback   (compare them: python -m xau_agent compare ...)
+  name: ny_orb
+  # Signal candles: 1m or 5m for scalping, 15m for the original Asian breakout.
+  timeframe: 5m
+  # fixed_pips = SL/TP always sl_pips / tp_pips from entry.
+  # atr        = stop at the setup's chart level, target = reward_risk x stop.
+  exit_mode: fixed_pips
+  sl_pips: 25
+  tp_pips: 50
+  # 1 pip in price. XAUUSD on most MT5 brokers: 0.10 (so 25 pips = $2.50 move). Check your broker.
+  pip_size: 0.10
+  reward_risk: 2.0     # atr mode only
+  min_stop_atr: 0.1    # atr mode only
+  atr_period: 14
+  # Close any open position at this time (all times UTC unless the name says _ny).
   flatten_utc: "20:30"
   weekdays_only: true
-  atr_period: 14
-  # Skip the day if the Asian range is wider than this many daily ATRs (already moved too much)...
-  max_range_atr: 1.2
-  # ...or narrower than this (dead market, false breakouts).
-  min_range_atr: 0.15
-  # A candle must CLOSE this far beyond the range (in daily ATRs) to count as a breakout.
+
+# --- per-strategy settings -----------------------------------------------------------------------
+asian_breakout:
+  # First candle that closes beyond the Asian session high/low.
+  asian_start_utc: "00:00"
+  asian_end_utc: "07:00"
+  entry_end_utc: "16:00"
+  max_range_atr: 1.2       # skip if the Asian range is wider than this many daily ATRs
+  min_range_atr: 0.15      # ...or narrower than this
   breakout_buffer_atr: 0.02
-  # mid = stop at the middle of the Asian range, opposite = stop at the other side.
-  stop_mode: mid
-  # Stop is never closer than this many daily ATRs from entry.
-  min_stop_atr: 0.1
-  reward_risk: 2.0
+  stop_mode: mid           # atr exit mode: stop at range middle (mid) or other side (opposite)
+
+ny_orb:
+  # New York opening range breakout. Times are New York time (daylight saving handled automatically).
+  start_ny: "09:30"
+  # Gold's first 30 minutes in New York are usually far wider than a 25-pip stop, so start with 15.
+  minutes: 15
+  entry_end_ny: "12:00"
+  # Skip the day if the opening range is wider than this (pips) - a news spike / whipsaw day.
+  max_range_pips: 80
+
+asian_sweep:
+  # London takes out the Asian high (low), then a candle closes back inside -> short (long).
+  asian_start_utc: "00:00"
+  asian_end_utc: "07:00"
+  end_utc: "10:00"
+  max_range_atr: 1.2
+  min_range_atr: 0.15
+
+trend_pullback:
+  # H1 EMA trend_fast vs trend_slow sets the direction; entry when a candle dips to the EMA and
+  # closes back in the trend direction. The swing over swing_bars candles must fit inside the SL.
+  sessions_utc: "07:00-11:00,13:00-17:00"
+  ema: 20
+  trend_fast: 50
+  trend_slow: 200
+  swing_bars: 6
+  cooldown_bars: 6
 
 risk:
-  # % of account equity lost if the stop is hit. Position size is calculated from this.
-  risk_per_trade_pct: 0.5
+  # fixed_lots = every entry uses fixed_lots. percent = size from risk_per_trade_pct.
+  sizing: fixed_lots
+  fixed_lots: 0.1
+  # Ounces per lot (standard XAUUSD = 100). 0.1 lot = 10 oz = $1 per pip with pip_size 0.10.
+  contract_oz: 100
+  # fixed_lots: skip the trade if one stop-out would lose more than this % of equity.
+  max_risk_per_trade_pct: 2.0
+  risk_per_trade_pct: 0.5   # percent sizing only
   # Stop opening trades for the rest of the UTC day after losing this % of the day's starting equity.
   max_daily_loss_pct: 2.0
   max_open_positions: 1
-  max_trades_per_day: 1
-  # Skip entry if spread is wider than this (basis points; 10 bps = 0.10%).
+  max_trades_per_day: 2
+  # Skip entry if the spread is wider than this many pips (or this many basis points).
+  max_spread_pips: 5
   max_spread_bps: 8
-  # Skip entry if position notional would exceed equity x this.
-  max_leverage: 5
+  # Skip entry if position value would exceed equity x this. 0.1 lot of gold is about 10 oz x price.
+  max_leverage: 50
   # No new entries this many minutes before/after high-impact USD news.
   news_blackout_before_min: 15
   news_blackout_after_min: 15
-  # Fail safe: if the economic calendar can't be loaded, don't trade.
   block_if_calendar_unavailable: true
 
 agent:
@@ -73,15 +111,15 @@ agent:
   model: claude-opus-5-5
   # low | medium | high | xhigh | max
   effort: medium
-  # Only take the trade if the agent says "take" with at least this confidence (0-1).
   min_confidence: 0.6
-  # Let the agent search the web for gold / USD news before deciding.
+  # Web news search before each decision. Slower (can take ~30-60s): on 1m/5m you may prefer false.
   news_search: true
 
 paper:
   starting_equity: 10000
-  # Simulated fee per side in basis points (Hyperliquid base taker fee is about 4.5 bps).
-  fee_bps: 4.5
+  # Simulated commission per side in basis points of position value. The spread is already paid
+  # through bid/ask fills. Standard MT5 accounts: 0. Hyperliquid taker: about 4.5.
+  fee_bps: 0.0
 
-poll_seconds: 20
+poll_seconds: 10
 data_dir: data

@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from xau_agent.brokers.base import Broker, Fill, Position, Quote
-from xau_agent.config import Config
+from xau_agent.config import Config, RiskConfig, StrategyConfig
 from xau_agent.indicators import interval_delta, resample_ohlc
 
 BASE = 2000.0
@@ -92,8 +92,64 @@ class FakeBroker(Broker):
         self._position = None
 
 
+def legacy_config(data_dir) -> Config:
+    """The original setup: Asian breakout on 15m, ATR stops, 0.5% risk sizing."""
+    c = Config()
+    c.data_dir = str(data_dir)
+    c.strategy = StrategyConfig(name="asian_breakout", timeframe="15m", exit_mode="atr")
+    c.risk = RiskConfig(sizing="percent", max_trades_per_day=1, max_leverage=5, max_spread_pips=None)
+    return c
+
+
 @pytest.fixture
 def cfg(tmp_path) -> Config:
+    return legacy_config(tmp_path / "data")
+
+
+@pytest.fixture
+def scalp_cfg(tmp_path) -> Config:
+    """The M5 setup: fixed 25/50 pip exits, 0.1 lot."""
     c = Config()
     c.data_dir = str(tmp_path / "data")
+    c.ny_orb.minutes = 30  # the ny_orb_day fixture builds a 30-minute opening range
+    c.ny_orb.max_range_pips = 25
     return c
+
+
+def flat_5m(day: pd.Timestamp, base: float = BASE, half_range: float = 0.5) -> pd.DataFrame:
+    idx = pd.date_range(day, periods=288, freq="5min", tz="UTC")
+    return pd.DataFrame(
+        {"open": base, "high": base + half_range, "low": base - half_range, "close": base}, index=idx
+    )
+
+
+def set_bar(df: pd.DataFrame, ts: str, o: float, h: float, low: float, c: float) -> None:
+    df.loc[pd.Timestamp(ts, tz="UTC"), ["open", "high", "low", "close"]] = [o, h, low, c]
+
+
+def ny_orb_day(day: pd.Timestamp, open_utc: str = "13:30", side: str = "long") -> pd.DataFrame:
+    """Opening range 1999-2001 (20 pips) from `open_utc` for 30 min, breakout close 2001.5 (or 1998.5),
+    then price runs to the 50-pip target (2006.5 / 1993.5) about an hour later."""
+    df = flat_5m(day, half_range=0.5)
+    start = pd.Timestamp(f"{day.date()} {open_utc}", tz="UTC")
+    rng = (df.index >= start) & (df.index < start + pd.Timedelta(minutes=30))
+    df.loc[rng, "high"], df.loc[rng, "low"] = BASE + 1, BASE - 1
+    sign = 1 if side == "long" else -1
+    brk = start + pd.Timedelta(minutes=35)
+    entry = BASE + sign * 1.5
+    set_bar(df, str(brk), BASE, max(BASE, entry) + 0.1, min(BASE, entry) - 0.1, entry)
+    after = df.index > brk
+    df.loc[after, ["open", "close"]] = entry
+    df.loc[after, "high"], df.loc[after, "low"] = entry + 0.3, entry - 0.3
+    hit = brk + pd.Timedelta(minutes=60)
+    if side == "long":
+        df.loc[hit, "high"] = entry + 5.2
+    else:
+        df.loc[hit, "low"] = entry - 5.2
+    return df
+
+
+def to_1m(df5: pd.DataFrame) -> pd.DataFrame:
+    """Split each 5m bar into five 1m bars with the same OHLC (good enough for exit tests)."""
+    parts = [df5.set_axis(df5.index + pd.Timedelta(minutes=i)) for i in range(5)]
+    return pd.concat(parts).sort_index()

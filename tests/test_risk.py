@@ -21,7 +21,8 @@ def test_clean_state_is_allowed():
     [
         ({"equity": 9_790}, "daily loss limit"),
         ({"open_positions": 1}, "max open positions"),
-        ({"trades_today": 1}, "max trades per day"),
+        ({"trades_today": 2}, "max trades per day"),
+        ({"spread_pips": 6.0}, "spread too wide (6.0 pips"),
         ({"spread_bps": 12}, "spread too wide"),
         ({"news_blackout": True, "news_events": ["CPI"]}, "news blackout"),
         ({"news_blackout": None}, "calendar unavailable"),
@@ -31,6 +32,11 @@ def test_clean_state_is_allowed():
 def test_blocks(overrides, expected):
     blocks = pre_trade_blocks(RiskConfig(), state(**overrides))
     assert any(expected in b for b in blocks), blocks
+
+
+def test_spread_pips_limit_is_optional():
+    assert pre_trade_blocks(RiskConfig(max_spread_pips=None), state(spread_pips=50.0)) == []
+    assert pre_trade_blocks(RiskConfig(), state(spread_pips=4.9)) == []
 
 
 def test_calendar_unavailable_can_be_allowed():

@@ -3,6 +3,8 @@
 import sys
 from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from xau_agent.brokers.base import OrderError
@@ -65,6 +67,11 @@ def test_hl_size_rounds_down_and_respects_min_notional():
     assert b.size_for_risk(0.01, 4012.3, 4006.4) == 0.0  # below $10 notional
 
 
+def test_hl_fixed_lots_to_coins():
+    assert hl(sz_decimals=3).size_from_lots(0.1, 100) == 10.0
+    assert hl(sz_decimals=1).size_from_lots(0.123, 100) == 12.3
+
+
 def test_hl_price_rounding_5_significant_figures():
     assert hl(sz_decimals=3).round_px(4012.3456) == 4012.3
     assert hl(sz_decimals=2).round_px(0.123456) == 0.1235
@@ -113,7 +120,7 @@ def test_hl_sync_keeps_orders_while_in_position():
 class FakeMT5(SimpleNamespace):
     def __init__(self):
         super().__init__(
-            TIMEFRAME_M15=15, ORDER_TYPE_BUY=0, ORDER_TYPE_SELL=1, POSITION_TYPE_BUY=0,
+            TIMEFRAME_M1=1, TIMEFRAME_M15=15, ORDER_TYPE_BUY=0, ORDER_TYPE_SELL=1, POSITION_TYPE_BUY=0,
             TRADE_ACTION_DEAL=1, ORDER_TIME_GTC=0, ORDER_FILLING_FOK=0, ORDER_FILLING_IOC=1,
             ORDER_FILLING_RETURN=2, TRADE_RETCODE_DONE=10009,
         )
@@ -135,6 +142,16 @@ class FakeMT5(SimpleNamespace):
 
     def order_calc_profit(self, order_type, symbol, volume, open_px, close_px):
         return (close_px - open_px) * 100 * volume if order_type == 0 else (open_px - close_px) * 100 * volume
+
+    def copy_rates_range(self, symbol, tf, start, end):
+        # Two M1 bars at 03:00/03:01 broker time (UTC+2 in this fake), spreads 25 and 31 points.
+        dtype = [("time", "i8"), ("open", "f8"), ("high", "f8"), ("low", "f8"), ("close", "f8"),
+                 ("tick_volume", "i8"), ("spread", "i4"), ("real_volume", "i8")]
+        t0 = int(pd.Timestamp("2026-10-21 03:00", tz="UTC").timestamp())
+        if start.timestamp() > t0:
+            return np.array([], dtype=dtype)
+        return np.array([(t0, 4010.1, 4011.0, 4009.5, 4010.8, 120, 25, 0),
+                         (t0 + 60, 4010.8, 4012.0, 4010.2, 4011.7, 130, 31, 0)], dtype=dtype)
 
     def order_send(self, request):
         self.sent.append(request)
@@ -173,3 +190,19 @@ def test_mt5_rejects_stop_inside_broker_minimum(mt5_broker):
     broker, _ = mt5_broker
     with pytest.raises(OrderError, match="broker minimum"):
         broker.open_with_bracket("long", 0.07, 4012.25, 4030)
+
+
+def test_mt5_fixed_lots_and_risk(mt5_broker):
+    broker, _ = mt5_broker
+    assert broker.size_from_lots(0.1, 100) == 0.1
+    assert broker.size_from_lots(0.005, 100) == 0.0  # below the 0.01 minimum
+    # 0.1 lot x 100 oz x $2.50 stop = $25
+    assert broker.risk_usd(0.1, 4012.3, 4009.8) == pytest.approx(25.0)
+
+
+def test_mt5_history_export_converts_to_utc_with_spread(mt5_broker):
+    broker, _ = mt5_broker
+    df = broker.history("1m", pd.Timestamp("2026-10-01", tz="UTC"), pd.Timestamp("2026-10-25", tz="UTC"))
+    assert len(df) == 2
+    assert df.index[0] == pd.Timestamp("2026-10-21 01:00", tz="UTC")  # server UTC+2 -> UTC
+    assert df["spread_price"].tolist() == pytest.approx([0.25, 0.31])

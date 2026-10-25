@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 
 import pandas as pd
+import pytest
 
 from xau_agent.agent import Decision
 from xau_agent.bot import Bot
 from xau_agent.brokers.base import Quote
 
-from .conftest import FakeBroker, breakout_day, history
+from .conftest import FakeBroker, breakout_day, flat_5m, history, ny_orb_day
 
 DAY = pd.Timestamp("2026-10-21", tz="UTC")
 BREAKOUT_CLOSE = pd.Timestamp("2026-10-21 07:30", tz="UTC")  # 07:15 candle has just closed
@@ -121,3 +122,49 @@ def test_rules_only_mode(cfg):
     bot = Bot(cfg, broker, calendar=StubCalendar(), notifier=SilentNotifier())
     step(bot)
     assert len(broker.orders) == 1
+
+
+# ---- M5 scalping setup: ny_orb, fixed 25/50 pips, 0.1 lot -------------------------------------------
+SIGNAL_CLOSE = pd.Timestamp("2026-10-21 14:10", tz="UTC")  # 14:05 breakout candle just closed
+
+
+def make_scalp_bot(scalp_cfg, quote=Quote(2001.5, 2001.8), equity=10_000.0, decision=Decision(True, 0.8, "ok")):
+    days = pd.bdate_range(end=DAY - pd.Timedelta(days=1), periods=12, tz="UTC")
+    candles = pd.concat([flat_5m(d) for d in days] + [ny_orb_day(DAY)])
+    broker = FakeBroker(candles, quote, equity=equity)
+    broker.now = SIGNAL_CLOSE
+    bot = Bot(scalp_cfg, broker, agent=StubAgent(decision), calendar=StubCalendar(), notifier=SilentNotifier())
+    return bot, broker
+
+
+def test_scalp_fixed_lot_entry_with_25_50_pips(scalp_cfg):
+    bot, broker = make_scalp_bot(scalp_cfg)
+    step(bot, SIGNAL_CLOSE)
+    [fill] = broker.orders
+    assert fill.side == "long" and fill.size == 10.0  # 0.1 lot = 10 oz on an ounce-based broker
+    assert fill.price == 2001.8
+    assert (fill.stop, fill.take_profit) == (pytest.approx(1999.3), pytest.approx(2006.8))
+    assert any("risk $25.00" in m for m in bot.notifier.messages)
+
+
+def test_scalp_skips_when_price_ran_away(scalp_cfg):
+    # Ask is 0.9 above the 2001.5 signal close: more than 30% of a 2.5 stop.
+    bot, broker = make_scalp_bot(scalp_cfg, quote=Quote(2002.3, 2002.4))
+    step(bot, SIGNAL_CLOSE)
+    assert broker.orders == []
+    assert any("price moved" in m for m in bot.notifier.messages)
+
+
+def test_scalp_fixed_lot_too_big_for_account(scalp_cfg):
+    # $25 risk on a $1,000 account = 2.5% > max_risk_per_trade_pct 2%.
+    bot, broker = make_scalp_bot(scalp_cfg, equity=1_000.0)
+    step(bot, SIGNAL_CLOSE)
+    assert broker.orders == []
+    assert any("would risk 2.50% of equity" in m for m in bot.notifier.messages)
+
+
+def test_scalp_second_trade_allowed_same_day(scalp_cfg):
+    bot, broker = make_scalp_bot(scalp_cfg)
+    bot.journal.log("entry", note="earlier trade today")
+    step(bot, SIGNAL_CLOSE)
+    assert len(broker.orders) == 1  # max_trades_per_day is 2

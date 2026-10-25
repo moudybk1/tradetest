@@ -66,6 +66,14 @@ class Broker(ABC):
     def notional(self, size: float, price: float) -> float:
         """Position value in account currency."""
 
+    def size_from_lots(self, lots: float, contract_oz: float) -> float:
+        """Order size for a fixed lot amount. Default: brokers that trade in ounces/coins."""
+        return round(lots * contract_oz, 6)
+
+    def risk_usd(self, size: float, entry: float, stop: float) -> float:
+        """Account-currency loss if the stop is hit."""
+        return abs(entry - stop) * size
+
     @abstractmethod
     def open_with_bracket(self, side: str, size: float, stop: float, take_profit: float) -> Fill:
         """Market entry with stop loss and take profit attached. Must never leave a position without a stop."""

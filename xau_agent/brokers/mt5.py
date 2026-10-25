@@ -128,6 +128,43 @@ class MT5Broker(Broker):
     def notional(self, size: float, price: float) -> float:
         return size * self._info().trade_contract_size * price
 
+    def size_from_lots(self, lots: float, contract_oz: float) -> float:
+        info = self._info()
+        return lots_for_risk(lots, 1.0, info.volume_step, info.volume_min, info.volume_max)
+
+    def risk_usd(self, size: float, entry: float, stop: float) -> float:
+        order_type = self.mt5.ORDER_TYPE_BUY if stop < entry else self.mt5.ORDER_TYPE_SELL
+        loss = self.mt5.order_calc_profit(order_type, self.symbol, size, entry, stop)
+        if loss is None:
+            info = self._info()
+            loss = abs(entry - stop) / info.trade_tick_size * info.trade_tick_value * size
+        return abs(loss)
+
+    def history(self, interval: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        """Historical bars in UTC with the broker's real spread, fetched month by month.
+
+        Raise "Max bars in chart" (Tools > Options > Charts) to Unlimited in MT5 for long histories.
+        """
+        tf = getattr(self.mt5, self.TIMEFRAMES[interval])
+        offset = self._server_offset_seconds()
+        point = self._info().point
+        frames = []
+        chunk_start = start
+        while chunk_start < end:
+            chunk_end = min(end, chunk_start + pd.Timedelta(days=30))
+            rates = self.mt5.copy_rates_range(self.symbol, tf, chunk_start.to_pydatetime(), chunk_end.to_pydatetime())
+            if rates is not None and len(rates):
+                frames.append(pd.DataFrame(rates))
+            chunk_start = chunk_end
+        if not frames:
+            raise OrderError(f"no history returned for {self.symbol}: {self.mt5.last_error()}")
+        df = pd.concat(frames).drop_duplicates("time")
+        out = df[["open", "high", "low", "close"]].astype(float)
+        out["spread_price"] = df["spread"].astype(float) * point
+        out.index = pd.to_datetime(df["time"] - offset, unit="s", utc=True)
+        out.index.name = "time"
+        return out.sort_index()
+
     # ---- orders ------------------------------------------------------------------------------
     def _filling(self, info) -> int:
         if info.filling_mode & SYMBOL_FILLING_FOK:

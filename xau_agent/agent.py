@@ -22,18 +22,20 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 SYSTEM_PROMPT = """\
 You review trade signals for an automated XAU/USD (gold) intraday trading system. A fixed rule \
-(Asian-session range breakout) has just triggered. Position size, stop loss and take profit are \
+has just triggered; `signal.strategy` names it (asian_breakout, ny_orb = New York opening range \
+breakout, asian_sweep = reversal after London takes out the Asian high/low, trend_pullback = \
+pullback to the EMA in the H1 trend direction). Position size, stop loss and take profit are \
 already set by a separate risk manager and you cannot change them. Your only job is to decide \
-whether this particular breakout is worth taking given the wider context.
+whether this particular signal is worth taking given the wider context.
 
 Context that usually matters for gold: the direction of the US dollar and US real yields, Fed \
 expectations, high-impact US data due in the next few hours, geopolitical risk, whether the \
-breakout goes with or against the higher-timeframe trend, and whether price has already run far \
-from the range.
+trade goes with or against the higher-timeframe trend, and whether price has already run far \
+from the setup.
 
 Answer "skip" when the context clearly argues against the trade, or when a major event is likely \
 to whipsaw price before the target can be reached. Otherwise answer "take". The system's edge \
-comes from taking valid breakouts consistently, so do not skip only because the outcome is \
+comes from taking valid signals consistently, so do not skip only because the outcome is \
 uncertain. `confidence` is your probability (0 to 1) that taking the trade is the better choice. \
 Keep `reason` to one or two sentences and list the main risks you see in `key_risks`."""
 
@@ -78,20 +80,20 @@ def build_context(
     daily = daily[daily.index.day_of_week < 5]
     ema50, ema200 = ema(h4["close"], 50).iloc[-1], ema(h4["close"], 200).iloc[-1]
     risk = signal.stop_distance
+    setup = {k: round(v, 2) if isinstance(v, float) else v for k, v in signal.context.items()}
     return {
         "now_utc": now.strftime("%Y-%m-%d %H:%M"),
         "instrument": instrument,
         "signal": {
+            "strategy": signal.strategy,
             "side": signal.side,
-            "breakout_candle_open_utc": signal.candle_time.strftime("%H:%M"),
+            "signal_candle_open_utc": signal.candle_time.strftime("%H:%M"),
             "entry": round(signal.entry, 2),
             "stop": round(signal.stop, 2),
             "take_profit": round(signal.take_profit, 2),
+            "stop_distance": round(risk, 2),
             "reward_risk": round(abs(signal.take_profit - signal.entry) / risk, 2) if risk else None,
-            "asian_range_high": round(signal.range_high, 2),
-            "asian_range_low": round(signal.range_low, 2),
-            "asian_range_width_in_daily_atr": round((signal.range_high - signal.range_low) / signal.daily_atr, 2),
-            "daily_atr": round(signal.daily_atr, 2),
+            "setup": setup,
         },
         "market": {
             "current_price": round(price, 2),

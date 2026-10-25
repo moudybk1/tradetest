@@ -7,8 +7,8 @@ import httpx2
 import pandas as pd
 
 from xau_agent.agent import TradeAgent, build_context
-from xau_agent.config import AgentConfig, StrategyConfig
-from xau_agent.strategy import find_breakout
+from xau_agent.config import AgentConfig
+from xau_agent.strategy import asian_breakout
 
 from .conftest import breakout_day, history
 
@@ -81,14 +81,16 @@ def test_news_search_resumes_pause_turn():
     assert client.calls[1]["messages"][-1]["role"] == "assistant"
 
 
-def test_build_context_has_numbers():
+def test_build_context_has_numbers(cfg):
     day = pd.Timestamp("2026-10-21", tz="UTC")
     candles = pd.concat([history(60), breakout_day(day)])
-    signal = find_breakout(candles, day, 20.0, StrategyConfig())
+    [signal] = asian_breakout(candles, day, 20.0, cfg)
     hourly = candles.resample("1h").agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
-    ctx = build_context(signal, "PAXG", datetime(2026, 10, 21, 7, 30, tzinfo=timezone.utc), 2006.2, 1.5,
+    ctx = build_context(signal, "XAUUSD", datetime(2026, 10, 21, 7, 30, tzinfo=timezone.utc), 2006.2, 1.5,
                         hourly, [], None)
+    assert ctx["signal"]["strategy"] == "asian_breakout"
     assert ctx["signal"]["reward_risk"] == 2.0
+    assert ctx["signal"]["setup"]["range_high"] == 2004.0
     assert ctx["market"]["h4_trend"] in ("up", "down")
     assert ctx["news_summary"] == "not available"
     json.dumps(ctx)  # must be serialisable for the API call
