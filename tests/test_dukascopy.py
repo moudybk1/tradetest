@@ -30,14 +30,16 @@ def test_parse_bi5_field_order_and_scale():
 
 
 class FakeSession:
-    def __init__(self, files):
+    def __init__(self, files, status=None):
         self.files = files
+        self.status = status
 
     def get(self, url, timeout):
         content = self.files.get(url)
+        status = self.status or (200 if content is not None else 404)
 
         class Resp:
-            status_code = 200 if content is not None else 404
+            status_code = status
 
             def raise_for_status(self):
                 pass
@@ -66,3 +68,10 @@ def test_wrong_divisor_is_caught():
     files = {day_url("XAUUSD", DAY, "BID"): bi5([(0, 4010.0, 4010.5, 4009.8, 4010.6, 3.0)])}
     with pytest.raises(ValueError, match="price divisor"):
         fetch_dukascopy(DAY, DAY + pd.Timedelta(days=1), divisor=1.0, session=FakeSession(files), workers=1)
+
+
+def test_refused_download_explains_alternatives():
+    from xau_agent.dukascopy import DukascopyRefused
+
+    with pytest.raises(DukascopyRefused, match="export-mt5"):
+        fetch_dukascopy(DAY, DAY + pd.Timedelta(days=1), session=FakeSession({}, status=429), workers=1)

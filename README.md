@@ -101,6 +101,9 @@ bid/ask spread per minute, and works on any OS:
 python -m xau_agent download-dukascopy --days 730 --out data/xauusd_m1.csv
 ```
 
+Dukascopy may refuse automated downloads (HTTP 429). The command then stops and lists the other
+options: MT5 export, or Dukascopy's own export page in a browser.
+
 Also supported: a file from MT5's own *Export Bars* dialog (add `--server-utc-offset 2` or `3`, your
 broker's time zone), or Dukascopy CSV exports (no spread column, so `--spread-pips` is used).
 

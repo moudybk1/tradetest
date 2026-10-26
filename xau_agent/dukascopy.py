@@ -39,12 +39,23 @@ def parse_bi5(raw: bytes, day: pd.Timestamp, divisor: float) -> pd.DataFrame:
     return df
 
 
+class DukascopyRefused(RuntimeError):
+    pass
+
+
 def _get(session: requests.Session, url: str, tries: int = 4) -> bytes:
     for attempt in range(tries):
         try:
             resp = session.get(url, timeout=30)
             if resp.status_code == 404:
                 return b""
+            if resp.status_code == 429:
+                raise DukascopyRefused(
+                    "Dukascopy refused the automated download (HTTP 429). Use one of these instead:\n"
+                    "  - MT5: python -m xau_agent export-mt5 --days 730 --out data/xauusd_m1.csv\n"
+                    "  - MT5 without Python: Ctrl+U > Bars > XAUUSD, M1 > Request > Export Bars, then\n"
+                    "    python -m xau_agent compare --csv <file> --server-utc-offset 2\n"
+                    "  - Dukascopy's own Historical Data Export page in a browser (CSV)")
             resp.raise_for_status()
             return resp.content
         except requests.RequestException as exc:
