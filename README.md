@@ -94,6 +94,13 @@ This saves 1-minute bars in UTC **with your broker's real spread per bar**, so t
 the spread you'd actually pay. If it returns fewer bars than expected, set MT5 **Tools → Options →
 Charts → Max bars in chart** to Unlimited and restart the terminal.
 
+**No MT5 or no Windows?** Download free M1 history from Dukascopy instead. It includes their real
+bid/ask spread per minute, and works on any OS:
+
+```bash
+python -m xau_agent download-dukascopy --days 730 --out data/xauusd_m1.csv
+```
+
 Also supported: a file from MT5's own *Export Bars* dialog (add `--server-utc-offset 2` or `3`, your
 broker's time zone), or Dukascopy CSV exports (no spread column, so `--spread-pips` is used).
 
@@ -171,6 +178,7 @@ https://app.hyperliquid.xyz/API, which can trade but cannot withdraw) in `.env`,
 xau_agent/
   strategy.py        the five triggers (pure functions, shared with the backtest)
   backtest.py        M1-precision backtest engine, CSV loaders
+  dukascopy.py       free M1 history download
   risk.py            hard risk rules
   agent.py           Claude review: news search + take/skip decision
   econ_calendar.py   high-impact news blackout

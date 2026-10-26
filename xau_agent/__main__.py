@@ -192,6 +192,19 @@ def cmd_compare(args) -> None:
     print(pd.DataFrame(rows).set_index("strategy").to_string())
 
 
+def cmd_download_dukascopy(args) -> None:
+    """Free M1 gold history with Dukascopy's real bid/ask spread (works on any OS, no MT5 needed)."""
+    from .dukascopy import fetch_dukascopy
+
+    end = pd.Timestamp.now(tz="UTC").normalize()
+    print(f"downloading {args.days} days of {args.symbol} M1 from Dukascopy (2 small files per day)...")
+    df = fetch_dukascopy(end - pd.Timedelta(days=args.days), end, args.symbol, args.price_divisor)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(args.out)
+    print(f"saved {len(df):,} M1 bars ({df.index[0]} -> {df.index[-1]}, UTC), "
+          f"median spread {df['spread_price'].median():.2f} to {args.out}")
+
+
 def cmd_export_mt5(args) -> None:
     """Download M1 (or other) history with real spreads from your MT5 terminal to CSV (Windows)."""
     from .brokers.mt5 import MT5Broker
@@ -260,6 +273,13 @@ def main() -> None:
     p = sub.add_parser("compare", help="backtest all strategies side by side")
     data_args(p)
     p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("download-dukascopy", help="download free XAUUSD M1 history with real spread")
+    p.add_argument("--days", type=int, default=730)
+    p.add_argument("--symbol", default="XAUUSD")
+    p.add_argument("--price-divisor", type=float, default=1000.0, help="Dukascopy integer price scale")
+    p.add_argument("--out", default="data/xauusd_m1.csv")
+    p.set_defaults(func=cmd_download_dukascopy)
 
     p = sub.add_parser("export-mt5", help="save MT5 history (with real spread) to CSV for backtesting")
     p.add_argument("--days", type=int, default=365)
