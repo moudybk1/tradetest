@@ -140,6 +140,36 @@ How to read the results:
 did on a given day, so a backtest of the agent would look unrealistically good. Judge the agent
 going forward in paper mode, and compare `agent.enabled: true` vs `false` over the same weeks.
 
+### Quick check in TradingView (no Python needed)
+
+`tradingview/ifvg_hammer.pine` is the `ifvg_hammer` strategy as a TradingView strategy, with the
+same rules and both directions:
+
+1. Open a gold chart on 1m or 5m: `BYBIT:XAUTUSDT.P`, `BYBIT:PAXGUSDT.P`, `OANDA:XAUUSD`...
+2. Open **Pine Editor**, paste the file, click **Add to chart**, then open **Strategy Tester**.
+   Win rate is "Percent profitable".
+3. In the strategy's **Properties**, set the commission to your venue's fee (default 0.055% per side,
+   Bybit's non-VIP taker fee; use 0 on a CFD chart and add slippage instead).
+
+Limits: TradingView only backtests the candles your plan loads, which on 1m/5m is often just a few
+weeks, so the sample is small. It also uses its own rule for a candle that touches both stop and
+target. Use the Python backtester for 1-2 years of data.
+
+### Costs on crypto exchanges (Bybit, Hyperliquid)
+
+Perpetual futures charge a fee on the **position value**, not a spread. At Bybit's non-VIP taker
+fee (0.055% per side) and gold around $4,000, a round trip costs about $4.40 per ounce, or
+**about 44 pips**. That is more than a typical stop in these M1/M5 setups. At RR 1:2:
+
+| average stop | cost in R | win rate needed to break even |
+|---|---|---|
+| 40 pips | 1.1R | ~70% |
+| 75 pips | 0.6R | ~53% |
+| 150 pips | 0.3R | ~43% |
+
+Backtest with `--fee-pct 0.055` to see this. Limit (maker) orders are cheaper, and CFD brokers on MT5
+usually charge only a spread of 2-4 pips. Check your exchange's fee tier.
+
 ## 4. Check, then paper trade
 
 ```bash
@@ -184,5 +214,6 @@ xau_agent/
   econ_calendar.py   high-impact news blackout
   bot.py             main loop
   brokers/           mt5.py, hyperliquid.py, paper.py
+tradingview/         Pine Script version of ifvg_hammer for TradingView's Strategy Tester
 tests/               pytest suite: python -m pytest
 ```

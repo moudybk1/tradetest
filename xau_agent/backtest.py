@@ -25,6 +25,7 @@ class Costs:
     spread_pips: float = 3.0       # used when the data has no spread column
     slippage_pips: float = 0.5     # extra pips lost on every trade (entry + exit)
     commission_per_lot: float = 0.0  # round-turn commission in $ per 1.0 lot
+    fee_pct_per_side: float = 0.0    # exchange fee in % of position value, charged on entry and exit (Bybit taker: 0.055)
 
 
 # ---- data loading -------------------------------------------------------------------------------
@@ -165,7 +166,8 @@ def run_backtest(candles: pd.DataFrame, cfg: Config, costs: Costs | None = None,
             direction = 1 if sig.side == "long" else -1
             spread_pips = (spread[start] / s.pip_size) if spread is not None and start < len(spread) \
                 else costs.spread_pips
-            cost_pips = spread_pips + costs.slippage_pips
+            fee_pips = 2 * costs.fee_pct_per_side / 100 * sig.entry / s.pip_size
+            cost_pips = spread_pips + costs.slippage_pips + fee_pips
             pips = direction * (exit_px - sig.entry) / s.pip_size - cost_pips
             usd = pips * pip_value - costs.commission_per_lot * lots
             stop_pips = sig.stop_distance / s.pip_size

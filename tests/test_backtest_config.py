@@ -191,3 +191,10 @@ def test_breakeven_with_variable_stops():
     st = summarize(trades, 10, 0.1)
     assert st["breakeven_win_rate_pct"] == pytest.approx((1 + 0.1) / 3 * 100, abs=0.1)
     assert st["avg_stop_pips"] == 20.0
+
+
+def test_percent_fees_bybit_style(scalp_cfg):
+    # 0.055% per side on a 2001.5 entry = 2 x 1.1008 = 2.2017 in price = 22.0 pips at pip 0.10
+    trades, _ = run_backtest(scalp_history(), scalp_cfg, Costs(0, 0, 0, fee_pct_per_side=0.055))
+    assert trades["cost_pips"].iloc[0] == pytest.approx(2 * 0.00055 * 2001.5 / 0.10, abs=0.01)
+    assert trades["pips"].iloc[0] == pytest.approx(50 - 22.0, abs=0.05)

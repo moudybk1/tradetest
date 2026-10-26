@@ -135,7 +135,7 @@ def exits_label(cfg) -> str:
 def _costs(args):
     from .backtest import Costs
 
-    return Costs(args.spread_pips, args.slippage_pips, args.commission)
+    return Costs(args.spread_pips, args.slippage_pips, args.commission, args.fee_pct)
 
 
 def _print_stats(title: str, stats: dict) -> None:
@@ -258,6 +258,8 @@ def main() -> None:
         p.add_argument("--spread-pips", type=float, default=3.0, help="spread when the data has no spread column")
         p.add_argument("--slippage-pips", type=float, default=0.5, help="extra pips lost per trade")
         p.add_argument("--commission", type=float, default=0.0, help="round-turn commission in $ per 1.0 lot")
+        p.add_argument("--fee-pct", type=float, default=0.0,
+                       help="exchange fee in %% of position value per side (Bybit perp taker: 0.055)")
         p.add_argument("--lots", type=float, help="lot size for $ results (default: risk.fixed_lots)")
         p.add_argument("--split", help="YYYY-MM-DD: also report results before/after this date (out-of-sample)")
         p.add_argument("--timeframe", choices=["1m", "5m", "15m"], help="override strategy.timeframe")
