@@ -106,6 +106,10 @@ broker's time zone), or Dukascopy CSV exports (no spread column, so `--spread-pi
 
 ## 3. Backtest
 
+**One click:** `scripts\backtest_windows.bat` (double-click on Windows) or `bash scripts/backtest.sh`
+(Mac/Linux). It installs everything, downloads 2 years of M1 gold from Dukascopy, and runs three
+comparisons: M5, M1, and M5 with Bybit perp fees. Results go to `data/results_*.txt`.
+
 ```bash
 # all strategies side by side (RR 1:2 from config); --split = out-of-sample check from that date
 python -m xau_agent compare --csv data/xauusd_m1.csv --split 2026-01-01 --slippage-pips 0.5 --commission 0
@@ -215,5 +219,6 @@ xau_agent/
   bot.py             main loop
   brokers/           mt5.py, hyperliquid.py, paper.py
 tradingview/         Pine Script version of ifvg_hammer for TradingView's Strategy Tester
+scripts/             one-click backtest (Windows .bat, Mac/Linux .sh)
 tests/               pytest suite: python -m pytest
 ```
