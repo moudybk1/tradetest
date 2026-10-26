@@ -2,7 +2,7 @@
 
 Every strategy has two steps:
   prepare(bars, hourly, cfg)        add indicator columns. Must be causal (row t uses data up to t only).
-  day_signals(day_bars, day, atr, cfg)  every signal of one UTC day, in time order, from CLOSED bars.
+  signals(day_bars, day, atr, cfg)  every signal of one UTC day, in time order, from CLOSED bars.
 
 The bot/backtest then decides which signals can actually be traded (one position at a time,
 max trades per day, risk rules). Strategies:
@@ -47,7 +47,7 @@ class Signal:
         """Re-anchor on the real entry price.
 
         fixed_pips: SL and TP move with the entry (always exactly sl_pips / tp_pips away).
-        atr: the stop stays at its chart level, the target keeps the reward:risk ratio.
+        rr: the stop stays at its chart level, the target keeps the reward:risk ratio.
         """
         if cfg.exit_mode == "fixed_pips":
             stop, tp = fixed_exits(self.side, entry, cfg)
@@ -70,12 +70,14 @@ def make_signal(name: str, side: str, entry: float, chart_stop: float, ts: pd.Ti
     if cfg.exit_mode == "fixed_pips":
         stop, tp = fixed_exits(side, entry, cfg)
     else:
-        min_stop = cfg.min_stop_atr * atr if atr else 0.0
+        # rr: just beyond the setup's level (the buffer covers spread / stop hunts), never too tight.
+        buffer = cfg.stop_buffer_pips * cfg.pip_size
+        min_stop = max(cfg.min_stop_atr * atr if atr else 0.0, cfg.min_stop_pips * cfg.pip_size)
         if side == "long":
-            stop = min(chart_stop, entry - min_stop)
+            stop = min(chart_stop - buffer, entry - min_stop)
             tp = entry + cfg.reward_risk * (entry - stop)
         else:
-            stop = max(chart_stop, entry + min_stop)
+            stop = max(chart_stop + buffer, entry + min_stop)
             tp = entry - cfg.reward_risk * (stop - entry)
     return Signal(name, side, float(entry), float(stop), float(tp), ts, context)
 
@@ -185,12 +187,12 @@ def asian_sweep(day_bars: pd.DataFrame, day: pd.Timestamp, atr: float | None, cf
         if not done_short and swept_high is not None and close < high:
             done_short = True
             # The stop must sit beyond the sweep wick, otherwise the setup is already invalid.
-            if s.exit_mode == "atr" or swept_high < close + sl_distance:
+            if s.exit_mode != "fixed_pips" or swept_high < close + sl_distance:
                 signals.append(make_signal("asian_sweep", "short", close, swept_high, ts, atr, s,
                                            range_high=high, range_low=low, sweep_extreme=swept_high))
         if not done_long and swept_low is not None and close > low:
             done_long = True
-            if s.exit_mode == "atr" or swept_low > close - sl_distance:
+            if s.exit_mode != "fixed_pips" or swept_low > close - sl_distance:
                 signals.append(make_signal("asian_sweep", "long", close, swept_low, ts, atr, s,
                                            range_high=high, range_low=low, sweep_extreme=swept_low))
     return signals
@@ -236,13 +238,13 @@ def trend_pullback(day_bars: pd.DataFrame, day: pd.Timestamp, atr: float | None,
             close, op, ema_v = float(row["close"]), float(row["open"]), float(row["ema"])
             if trend > 0 and row["low"] <= ema_v < close and close > op:
                 swing = float(row["swing_low"])
-                if s.exit_mode == "atr" or swing > close - sl_distance:
+                if s.exit_mode != "fixed_pips" or swing > close - sl_distance:
                     signals.append(make_signal("trend_pullback", "long", close, swing, ts, atr, s,
                                                ema=ema_v, swing_low=swing, h1_trend="up"))
                     cooldown = p.cooldown_bars
             elif trend < 0 and row["high"] >= ema_v > close and close < op:
                 swing = float(row["swing_high"])
-                if s.exit_mode == "atr" or swing < close + sl_distance:
+                if s.exit_mode != "fixed_pips" or swing < close + sl_distance:
                     signals.append(make_signal("trend_pullback", "short", close, swing, ts, atr, s,
                                                ema=ema_v, swing_high=swing, h1_trend="down"))
                     cooldown = p.cooldown_bars
@@ -358,6 +360,14 @@ class Strategy:
     name: str
     prepare: Callable[[pd.DataFrame, pd.DataFrame, Config], pd.DataFrame]
     day_signals: Callable[[pd.DataFrame, pd.Timestamp, float | None, Config], list[Signal]]
+
+    def signals(self, day_bars: pd.DataFrame, day: pd.Timestamp, atr: float | None, cfg: Config) -> list[Signal]:
+        """The strategy's signals for `day`, minus any whose stop is wider than strategy.max_stop_pips."""
+        s = cfg.strategy
+        out = self.day_signals(day_bars, day, atr, cfg)
+        if s.exit_mode != "fixed_pips" and s.max_stop_pips is not None:
+            out = [sig for sig in out if sig.stop_distance <= s.max_stop_pips * s.pip_size + 1e-9]
+        return out
 
 
 REGISTRY = {

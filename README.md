@@ -10,9 +10,11 @@ If everything says yes, the bot enters with the stop loss and take profit alread
                                              └────────── journal + Telegram alert ◄──────┘
 ```
 
-Default setup (`config.example.yaml`): **MT5, 5-minute signals, SL 25 pips / TP 50 pips, 0.1 lot per
-entry, max 2 trades a day.** With XAUUSD at 1 pip = $0.10 and 100 oz per lot, 0.1 lot = **$1 per pip**:
-a stop-out loses about $25 plus spread, a target wins about $50 minus spread.
+Default setup (`config.example.yaml`): **MT5, `ifvg_hammer` on 5-minute candles, both directions,
+RR 1:2, 0.1 lot per entry, max 2 trades a day.** The stop goes just beyond the hammer (or shooting
+star) and the target is 2× that distance. With XAUUSD at 1 pip = $0.10 and 100 oz per lot,
+0.1 lot = **$1 per pip**, so the dollar risk changes with each setup. A 30-pip stop risks $30 to
+win $60, and stops wider than 100 pips ($100) are skipped.
 
 > ⚠️ **Trading is risky and this bot can lose money.** Nothing here is financial advice and nothing
 > guarantees a profit. Backtest first, then paper trade, then a demo account, and only then risk
@@ -23,8 +25,8 @@ a stop-out loses about $25 plus spread, a target wins about $50 minus spread.
 | name | idea | default window (UTC unless noted) |
 |---|---|---|
 | `ny_orb` | first 5m close beyond the New York opening range (09:30 NY + 15 min, DST handled) | until 12:00 New York |
-| `asian_sweep` | London pushes through the Asian high (or low), then a candle closes back inside → trade the reversal. Skipped if the sweep wick doesn't fit inside the 25-pip stop | 07:00-10:00 |
-| `trend_pullback` | H1 EMA50 vs EMA200 sets the direction; a candle dips to the EMA20 and closes back in the trend. Skipped if the recent swing is beyond the stop | 07:00-11:00, 13:00-17:00 |
+| `asian_sweep` | London pushes through the Asian high (or low), then a candle closes back inside → trade the reversal. Stop beyond the sweep wick | 07:00-10:00 |
+| `trend_pullback` | H1 EMA50 vs EMA200 sets the direction; a candle dips to the EMA20 and closes back in the trend. Stop beyond the recent swing | 07:00-11:00, 13:00-17:00 |
 | `asian_breakout` | first close beyond the Asian (00:00-07:00) range, with ATR filters | 07:00-16:00 |
 | `ifvg_hammer` | a hammer at a swing low, then within 6 candles a candle **closes above a bearish fair value gap** (the FVG is inverted = IFVG) → long at that close. Shorts are the mirror: shooting star, then a close below a bullish FVG | 07:00-11:00, 13:00-17:00 |
 
@@ -36,20 +38,26 @@ a stop-out loses about $25 plus spread, a target wins about $50 minus spread.
 - **Hammer:** candle range at least 5 pips, lower wick at least 2× the body, upper wick at most 25% of the
   range, and its low is the lowest of the last 10 candles. If price trades below the hammer's low
   before the IFVG, the hammer no longer counts.
-- With `require_stop_beyond_hammer: true`, the trade is skipped when the hammer's low is more than
-  25 pips under the entry, because the stop would sit inside the wick. On M5 gold that is nearly
-  always the case, so test it on M1 (`--timeframe 1m`), or set it to `false` and accept the stop
-  inside the wick.
+- Stop (RR mode): the hammer's low minus 3 pips (`stop_buffer_pips`); shorts use the shooting star's
+  high plus 3 pips.
 
-Exits: `exit_mode: fixed_pips` keeps SL/TP at exactly `sl_pips` / `tp_pips` from the real entry price.
-`exit_mode: atr` puts the stop at the setup's chart level and the target at `reward_risk` × stop.
+Exits (`strategy.exit_mode`):
+- **`rr` (default):** the stop sits just beyond the setup's own level: the hammer, the sweep wick, the
+  swing low/high, or the opening range. The target is `reward_risk` × the stop distance (2 = RR 1:2).
+  The stop is never tighter than `min_stop_pips` (10). Signals that would need a stop wider than
+  `max_stop_pips` (100) are skipped.
+- **`fixed_pips`:** SL/TP are always exactly `sl_pips` / `tp_pips` (25/50) from the real entry. Setups
+  whose level doesn't fit inside 25 pips are skipped. For `ifvg_hammer` on M5 that is almost every
+  setup, which is why `rr` is the default.
+
 Everything open is closed at `flatten_utc` (20:30 UTC).
 
 ## Risk rules (the AI can't change them)
 
 - `sizing: fixed_lots` → every entry is `fixed_lots` (0.1). The trade is skipped if one stop-out would
-  lose more than `max_risk_per_trade_pct` (2%) of equity. For example, $25 risk needs at least $1,250
-  equity; $2,500 or more keeps it at 1% or less. `sizing: percent` sizes from `risk_per_trade_pct` instead.
+  lose more than `max_risk_per_trade_pct` (2%) of equity. At 0.1 lot, a 50-pip stop is $50 and needs at
+  least $2,500 equity; the 100-pip maximum ($100) needs $5,000. `sizing: percent` sizes each trade from
+  `risk_per_trade_pct` instead, so a wide stop gets a smaller lot.
 - Stop for the day after −2% (`max_daily_loss_pct`), max 1 open position, max 2 trades a day.
 - No entries 15 minutes before or after high-impact USD news (ForexFactory calendar).
 - Skip if the spread is over 5 pips, or if price ran more than 30% of the stop away from the signal
@@ -92,11 +100,13 @@ broker's time zone), or Dukascopy CSV exports (no spread column, so `--spread-pi
 ## 3. Backtest
 
 ```bash
-# all four strategies side by side; --split = out-of-sample check from that date
+# all strategies side by side (RR 1:2 from config); --split = out-of-sample check from that date
 python -m xau_agent compare --csv data/xauusd_m1.csv --split 2026-01-01 --slippage-pips 0.5 --commission 0
 
-# same comparison with 1-minute signals (needed for ifvg_hammer with a 25-pip stop)
+# the same on 1-minute signals, with a different RR, or with fixed 25/50-pip exits
 python -m xau_agent compare --csv data/xauusd_m1.csv --timeframe 1m --split 2026-01-01
+python -m xau_agent compare --csv data/xauusd_m1.csv --rr 1.5 --split 2026-01-01
+python -m xau_agent compare --csv data/xauusd_m1.csv --exit-mode fixed_pips --split 2026-01-01
 
 # one strategy in detail: monthly $ and every trade to CSV
 python -m xau_agent backtest --csv data/xauusd_m1.csv --strategy asian_sweep --split 2026-01-01 --trades-out trades.csv
@@ -106,15 +116,18 @@ Signals are built on `strategy.timeframe` candles (5m). Stops and targets are ch
 1-minute bar, and if one bar touches both, the stop counts.
 
 How to read the results:
-- **`win%` vs `breakeven%`:** with SL 25 / TP 50 you break even at (25 + costs) / 75, about 37-38%
-  with a 3-pip spread. A strategy is only interesting if it beats that clearly.
+- **`win%` vs `breakeven%`:** at RR 1:2 you break even at (1 + cost in R) / 3. A 30-pip stop with
+  3.5 pips of spread and slippage needs about 37%. Tighter stops need more, because the spread is a
+  bigger share of the risk. `breakeven%` is computed from the real stops and costs of every trade.
+  A strategy is only interesting if it beats that clearly.
+- **`avg_SL_pips` = average dollar risk at 0.1 lot.** A 40-pip average means about $40 per losing trade.
 - **Look at the out-of-sample columns.** Tune settings on data before `--split`, then check the period
   after it without changing anything. If out-of-sample collapses, it was overfitting.
 - **Count trades.** On purely random data, `trend_pullback` once showed +$428 over 74 trades by luck.
-  Across 8 random data sets (about 2,200 trades) every strategy hit its target almost exactly 33% of the
-  time, which is what pure chance gives. Want a few hundred trades before trusting a result.
-- **Losing streaks are normal:** at a 40% win rate, 8-12 losses in a row will happen. At 0.1 lot that's
-  about −$250 to −$350.
+  On random data every strategy averages about 0R before costs, both with fixed pips and with RR 1:2,
+  which is what pure chance gives. Want a few hundred trades before trusting a result.
+- **Losing streaks are normal:** at a 35-40% win rate, 8-12 losses in a row will happen. At 0.1 lot
+  with 40-pip stops that's about −$350 to −$500.
 
 **Why the backtest skips the AI agent:** Claude was trained on past data and may "remember" what gold
 did on a given day, so a backtest of the agent would look unrealistically good. Judge the agent

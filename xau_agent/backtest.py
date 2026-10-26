@@ -146,7 +146,7 @@ def run_backtest(candles: pd.DataFrame, cfg: Config, costs: Costs | None = None,
             continue
         day_atr = atr_at_open.get(day)
         day_atr = float(day_atr) if day_atr is not None and not np.isnan(day_atr) else None
-        signals = strat.day_signals(day_bars, day, day_atr, cfg)
+        signals = strat.signals(day_bars, day, day_atr, cfg)
         flatten_ns = _at(day, s.flatten_utc).value
         busy_until, taken = None, 0
         for sig in signals:
@@ -168,38 +168,49 @@ def run_backtest(candles: pd.DataFrame, cfg: Config, costs: Costs | None = None,
             cost_pips = spread_pips + costs.slippage_pips
             pips = direction * (exit_px - sig.entry) / s.pip_size - cost_pips
             usd = pips * pip_value - costs.commission_per_lot * lots
+            stop_pips = sig.stop_distance / s.pip_size
             trades.append({
                 "strategy": sig.strategy, "day": day.date(), "side": sig.side, "entry_time": entry_time,
                 "entry": round(sig.entry, 2), "stop": round(sig.stop, 2), "target": round(sig.take_profit, 2),
+                "stop_pips": round(stop_pips, 1),
+                "target_pips": round(abs(sig.take_profit - sig.entry) / s.pip_size, 1),
                 "exit_time": exit_time, "exit": round(exit_px, 2), "reason": reason,
                 "cost_pips": round(cost_pips, 2), "pips": round(pips, 2), "usd": round(usd, 2),
-                "r": pips / (sig.stop_distance / s.pip_size),
+                "risk_usd": round(stop_pips * pip_value, 2), "r": pips / stop_pips,
             })
             busy_until = exit_time + pd.Timedelta(minutes=1)
             taken += 1
 
     df = pd.DataFrame(trades)
     days = int((pd.Series(prepared.index.normalize().unique()).dt.day_of_week < 5).sum())
-    return df, summarize(df, days, s.sl_pips, s.tp_pips, lots)
+    return df, summarize(df, days, lots)
 
 
-def summarize(trades: pd.DataFrame, days: int, sl_pips: float, tp_pips: float, lots: float) -> dict:
+def summarize(trades: pd.DataFrame, days: int, lots: float) -> dict:
     if trades.empty:
         return {"trading_days": days, "trades": 0}
     usd = trades["usd"]
     curve = usd.cumsum()
     wins, losses = usd[usd > 0].sum(), -usd[usd < 0].sum()
     avg_cost = trades["cost_pips"].mean()
+    # Win rate needed to break even after costs: (1 + cost in R) / (1 + reward in R).
+    # Fixed 25/50 pips with 3.5 pips cost: (1 + 3.5/25) / (1 + 2) = 38%.
+    cost_r = (trades["cost_pips"] / trades["stop_pips"]).mean()
+    reward_r = (trades["target_pips"] / trades["stop_pips"]).mean()
     return {
         "trading_days": days,
         "trades": len(usd),
         "trades_per_week": round(len(usd) / max(days, 1) * 5, 1),
         "win_rate_pct": round((usd > 0).mean() * 100, 1),
-        # Win rate needed to break even with fixed SL/TP after costs: (SL + cost) / (SL + TP)
-        "breakeven_win_rate_pct": round((sl_pips + avg_cost) / (sl_pips + tp_pips) * 100, 1),
+        "breakeven_win_rate_pct": round((1 + cost_r) / (1 + reward_r) * 100, 1),
+        "avg_stop_pips": round(trades["stop_pips"].mean(), 1),
+        "max_stop_pips": round(trades["stop_pips"].max(), 1),
         "avg_cost_pips": round(avg_cost, 2),
+        "avg_r": round(trades["r"].mean(), 3),
         "net_pips": round(trades["pips"].sum(), 1),
         f"net_usd_at_{lots}_lot": round(usd.sum(), 2),
+        f"avg_risk_usd_at_{lots}_lot": round(trades["risk_usd"].mean(), 2),
+        f"max_risk_usd_at_{lots}_lot": round(trades["risk_usd"].max(), 2),
         "profit_factor": round(wins / losses, 2) if losses > 0 else float("inf"),
         "max_drawdown_usd": round((curve.cummax() - curve).max(), 2),
         "worst_losing_streak": int(max_streak(usd < 0)),
@@ -217,12 +228,11 @@ def max_streak(mask: pd.Series) -> int:
 
 def split_stats(trades: pd.DataFrame, split: str, cfg: Config, lots: float) -> dict:
     """Stats before and after `split` (YYYY-MM-DD): tune on the first part, judge on the second."""
-    s = cfg.strategy
     cut = pd.Timestamp(split).date()
     out = {}
     for label, part in (("in_sample", trades[trades["day"] < cut]), ("out_of_sample", trades[trades["day"] >= cut])):
         days = int(np.busday_count(part["day"].min(), part["day"].max()) + 1) if not part.empty else 0
-        out[label] = summarize(part.reset_index(drop=True), days, s.sl_pips, s.tp_pips, lots)
+        out[label] = summarize(part.reset_index(drop=True), days, lots)
     return out
 
 

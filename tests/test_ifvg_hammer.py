@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from xau_agent.backtest import Costs, run_backtest
-from xau_agent.strategy import candle_shapes, ifvg_hammer, prepare_ifvg_hammer
+from xau_agent.strategy import candle_shapes, get_strategy, ifvg_hammer, prepare_ifvg_hammer
 
 from .conftest import flat_5m, ifvg_hammer_day, mirror, set_bar, to_1m
 
@@ -128,3 +128,55 @@ def test_prepare_uses_only_the_past(scalp_cfg):
     cols = ["ifvg_long", "ifvg_short", "hammer_low", "star_high"]
     pd.testing.assert_frame_equal(full[cols].iloc[:400], part[cols])
     assert full["ifvg_long"].any() and full["ifvg_short"].any()
+
+
+# ---- RR 1:2 with the stop beyond the hammer (default config) ---------------------------------------
+def rr_signals(df, cfg):
+    strat = get_strategy("ifvg_hammer")
+    return strat.signals(strat.prepare(df, None, cfg), DAY, None, cfg)
+
+
+def test_rr_long_stop_beyond_hammer_target_2r(rr_cfg):
+    [sig] = rr_signals(ifvg_hammer_day(DAY), rr_cfg)
+    # hammer low 1999.9 - 3 pip buffer = 1999.6 -> 22 pip stop, target 44 pips
+    assert sig.entry == 2001.8
+    assert sig.stop == pytest.approx(1999.6)
+    assert sig.take_profit == pytest.approx(2001.8 + 2 * 2.2)
+
+
+def test_rr_short_mirror(rr_cfg):
+    [sig] = rr_signals(mirror(ifvg_hammer_day(DAY)), rr_cfg)
+    assert sig.side == "short"
+    assert sig.stop == pytest.approx(2004.1 + 0.3)
+    assert sig.take_profit == pytest.approx(2002.2 - 2 * 2.2)
+
+
+def test_rr_takes_the_setup_fixed_pips_had_to_skip(rr_cfg):
+    # Hammer low 1999.2 is 26 pips under entry: fixed 25 pips skipped it, rr just uses a wider stop.
+    [sig] = rr_signals(ifvg_hammer_day(DAY, hammer_low=1999.2), rr_cfg)
+    assert sig.stop == pytest.approx(1998.9)
+    assert sig.take_profit == pytest.approx(2001.8 + 2 * 2.9)
+
+
+def test_rr_min_and_max_stop(rr_cfg):
+    rr_cfg.strategy.min_stop_pips = 30
+    [sig] = rr_signals(ifvg_hammer_day(DAY), rr_cfg)
+    assert sig.stop == pytest.approx(2001.8 - 3.0)  # widened to the 30 pip minimum
+    rr_cfg.strategy.min_stop_pips = 10
+    rr_cfg.strategy.max_stop_pips = 20  # needs 22
+    assert rr_signals(ifvg_hammer_day(DAY), rr_cfg) == []
+
+
+def test_rr_backtest_win_is_2r(rr_cfg):
+    df = ifvg_hammer_day(DAY)
+    later = df.index > pd.Timestamp("2026-10-21 08:25", tz="UTC")
+    df.loc[later, ["open", "close"]] = 2002.5
+    df.loc[later, ["high", "low"]] = [2002.7, 2002.3]
+    df.loc[pd.Timestamp("2026-10-21 09:30", tz="UTC"), "high"] = 2006.5
+    prev = flat_5m(pd.Timestamp("2026-10-20", tz="UTC"), base=2002.0, half_range=0.2)
+    trades, stats = run_backtest(to_1m(pd.concat([prev, df])), rr_cfg, Costs(0, 0))
+    assert trades["reason"].iloc[0] == "target"
+    assert trades["r"].iloc[0] == pytest.approx(2.0)
+    assert trades["usd"].iloc[0] == pytest.approx(44.0)  # 44 pips x $1 at 0.1 lot
+    assert stats["avg_risk_usd_at_0.1_lot"] == pytest.approx(22.0)
+    assert stats["breakeven_win_rate_pct"] == pytest.approx(33.3, abs=0.1)

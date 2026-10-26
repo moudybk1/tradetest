@@ -34,16 +34,23 @@ class MT5Config:
 class StrategyConfig:
     """Settings shared by every strategy: which one runs, timeframe and exits."""
 
-    name: str = "ny_orb"
+    name: str = "ifvg_hammer"
     timeframe: str = "5m"
-    # fixed_pips = SL/TP a fixed number of pips from entry. atr = stop from the setup, target = reward_risk x stop.
-    exit_mode: str = "fixed_pips"
+    # rr         = stop beyond the setup's own level (hammer low, sweep wick, swing...) + stop_buffer_pips,
+    #              target = reward_risk x stop distance.  ("atr" is accepted as the old name for rr.)
+    # fixed_pips = SL/TP a fixed number of pips from entry.
+    exit_mode: str = "rr"
+    reward_risk: float = 2.0
+    stop_buffer_pips: float = 3
+    # rr: the stop is never closer than this (spread would dominate) ...
+    min_stop_pips: float = 10
+    min_stop_atr: float = 0.0
+    # ... and the signal is skipped if the stop would be wider than this (None = no limit).
+    max_stop_pips: float | None = 100
     sl_pips: float = 25
     tp_pips: float = 50
     # XAUUSD on most MT5 brokers: 1 pip = 0.10 (10 points on a 2-decimal quote).
     pip_size: float = 0.10
-    reward_risk: float = 2.0
-    min_stop_atr: float = 0.1
     atr_period: int = 14
     flatten_utc: time = time(20, 30)
     weekdays_only: bool = True
@@ -214,10 +221,16 @@ def validate(cfg: Config) -> None:
     s, r = cfg.strategy, cfg.risk
     if s.name not in STRATEGIES:
         raise ValueError(f"strategy.name must be one of {', '.join(STRATEGIES)}")
-    if s.exit_mode not in ("fixed_pips", "atr"):
-        raise ValueError("strategy.exit_mode must be 'fixed_pips' or 'atr'")
+    if s.exit_mode == "atr":
+        s.exit_mode = "rr"
+    if s.exit_mode not in ("fixed_pips", "rr"):
+        raise ValueError("strategy.exit_mode must be 'rr' or 'fixed_pips'")
     if s.sl_pips <= 0 or s.tp_pips <= 0 or s.pip_size <= 0 or s.reward_risk <= 0:
         raise ValueError("strategy.sl_pips, tp_pips, pip_size and reward_risk must be > 0")
+    if s.stop_buffer_pips < 0 or s.min_stop_pips < 0 or s.min_stop_atr < 0:
+        raise ValueError("strategy.stop_buffer_pips, min_stop_pips and min_stop_atr must be >= 0")
+    if s.max_stop_pips is not None and s.max_stop_pips <= s.min_stop_pips:
+        raise ValueError("strategy.max_stop_pips must be larger than min_stop_pips")
     ab, sw = cfg.asian_breakout, cfg.asian_sweep
     if ab.stop_mode not in ("mid", "opposite"):
         raise ValueError("asian_breakout.stop_mode must be 'mid' or 'opposite'")

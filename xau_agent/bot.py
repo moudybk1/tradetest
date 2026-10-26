@@ -76,7 +76,7 @@ class Bot:
     def run(self, once: bool = False) -> None:
         r, st = self.cfg.risk, self.cfg.strategy
         sizing = f"{r.fixed_lots} lot/trade" if r.sizing == "fixed_lots" else f"risk {r.risk_per_trade_pct}%/trade"
-        exits = f"SL {st.sl_pips}/TP {st.tp_pips} pips" if st.exit_mode == "fixed_pips" else f"{st.reward_risk}R target"
+        exits = f"SL {st.sl_pips}/TP {st.tp_pips} pips" if st.exit_mode == "fixed_pips" else f"RR 1:{st.reward_risk:g}"
         self.notify(f"bot started: {st.name} on {st.timeframe}, {instrument_name(self.cfg)}, {sizing}, {exits}")
         kill_file = self.cfg.data_path / KILL_FILE
         while True:
@@ -130,7 +130,7 @@ class Bot:
         atr = daily_atr(hourly, cfg.strategy.atr_period, today)
         strategy = get_strategy(cfg.strategy.name)
         prepared = strategy.prepare(candles, hourly, cfg)
-        signals = strategy.day_signals(day_candles(prepared, today), today, atr, cfg)
+        signals = strategy.signals(day_candles(prepared, today), today, atr, cfg)
         # Act only on a signal whose candle JUST closed - never chase a stale one after a restart.
         signal = next((sig for sig in signals if sig.candle_time == last), None)
         if signal is None:

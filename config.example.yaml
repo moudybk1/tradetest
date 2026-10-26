@@ -27,18 +27,23 @@ hyperliquid:
 
 strategy:
   # asian_breakout | ny_orb | asian_sweep | trend_pullback | ifvg_hammer   (compare: python -m xau_agent compare ...)
-  name: ny_orb
+  name: ifvg_hammer
   # Signal candles: 1m or 5m for scalping, 15m for the original Asian breakout.
   timeframe: 5m
+  # rr         = stop just beyond the setup's own level (hammer low / shooting-star high, sweep wick,
+  #              swing...) + stop_buffer_pips; target = reward_risk x that stop distance.
   # fixed_pips = SL/TP always sl_pips / tp_pips from entry.
-  # atr        = stop at the setup's chart level, target = reward_risk x stop.
-  exit_mode: fixed_pips
+  exit_mode: rr
+  reward_risk: 2.0          # 2.0 = RR 1:2
+  stop_buffer_pips: 3       # extra room beyond the wick for spread / stop hunts
+  min_stop_pips: 10         # never a tighter stop than this
+  max_stop_pips: 100        # skip the signal if the stop would be wider (0.1 lot: 100 pips = $100)
+  min_stop_atr: 0.0         # optional extra minimum in daily ATRs (0 = off)
+  # fixed_pips mode only:
   sl_pips: 25
   tp_pips: 50
   # 1 pip in price. XAUUSD on most MT5 brokers: 0.10 (so 25 pips = $2.50 move). Check your broker.
   pip_size: 0.10
-  reward_risk: 2.0     # atr mode only
-  min_stop_atr: 0.1    # atr mode only
   atr_period: 14
   # Close any open position at this time (all times UTC unless the name says _ny).
   flatten_utc: "20:30"
@@ -98,7 +103,8 @@ ifvg_hammer:
   hammer_min_range_pips: 5
   # Hammer low must be the lowest low of the last N candles (0 = off).
   hammer_swing_bars: 10
-  # Skip if the hammer's low is further than sl_pips from entry (the stop would sit inside the wick).
+  # fixed_pips mode only: skip if the hammer's low is further than sl_pips from entry
+  # (the stop would sit inside the wick). In rr mode the stop always goes beyond the hammer.
   require_stop_beyond_hammer: true
 
 risk:

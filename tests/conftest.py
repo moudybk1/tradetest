@@ -92,11 +92,20 @@ class FakeBroker(Broker):
         self._position = None
 
 
+@pytest.fixture
+def rr_cfg(tmp_path) -> Config:
+    """The default config: ifvg_hammer, RR 1:2 with the stop beyond the hammer, 0.1 lot."""
+    c = Config()
+    c.data_dir = str(tmp_path / "data")
+    return c
+
+
 def legacy_config(data_dir) -> Config:
     """The original setup: Asian breakout on 15m, ATR stops, 0.5% risk sizing."""
     c = Config()
     c.data_dir = str(data_dir)
-    c.strategy = StrategyConfig(name="asian_breakout", timeframe="15m", exit_mode="atr")
+    c.strategy = StrategyConfig(name="asian_breakout", timeframe="15m", exit_mode="rr", stop_buffer_pips=0,
+                                min_stop_pips=0, min_stop_atr=0.1, max_stop_pips=None)
     c.risk = RiskConfig(sizing="percent", max_trades_per_day=1, max_leverage=5, max_spread_pips=None)
     return c
 
@@ -111,6 +120,7 @@ def scalp_cfg(tmp_path) -> Config:
     """The M5 setup: fixed 25/50 pip exits, 0.1 lot."""
     c = Config()
     c.data_dir = str(tmp_path / "data")
+    c.strategy.name, c.strategy.exit_mode = "ny_orb", "fixed_pips"
     c.ny_orb.minutes = 30  # the ny_orb_day fixture builds a 30-minute opening range
     c.ny_orb.max_range_pips = 25
     return c

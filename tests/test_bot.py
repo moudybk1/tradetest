@@ -7,7 +7,7 @@ from xau_agent.agent import Decision
 from xau_agent.bot import Bot
 from xau_agent.brokers.base import Quote
 
-from .conftest import FakeBroker, breakout_day, flat_5m, history, ny_orb_day
+from .conftest import FakeBroker, breakout_day, flat_5m, history, ifvg_hammer_day, ny_orb_day
 
 DAY = pd.Timestamp("2026-10-21", tz="UTC")
 BREAKOUT_CLOSE = pd.Timestamp("2026-10-21 07:30", tz="UTC")  # 07:15 candle has just closed
@@ -168,3 +168,17 @@ def test_scalp_second_trade_allowed_same_day(scalp_cfg):
     bot.journal.log("entry", note="earlier trade today")
     step(bot, SIGNAL_CLOSE)
     assert len(broker.orders) == 1  # max_trades_per_day is 2
+
+
+def test_rr_bot_entry_risk_varies_with_the_hammer(rr_cfg):
+    days = pd.bdate_range(end=DAY - pd.Timedelta(days=1), periods=12, tz="UTC")
+    candles = pd.concat([flat_5m(d, base=2002.0, half_range=0.2) for d in days] + [ifvg_hammer_day(DAY)])
+    broker = FakeBroker(candles, Quote(2001.8, 2001.8))
+    broker.now = pd.Timestamp("2026-10-21 08:30", tz="UTC")  # 08:25 IFVG candle just closed
+    bot = Bot(rr_cfg, broker, agent=StubAgent(Decision(True, 0.8, "ok")), calendar=StubCalendar(),
+              notifier=SilentNotifier())
+    step(bot, broker.now)
+    [fill] = broker.orders
+    assert fill.size == 10.0 and fill.stop == pytest.approx(1999.6)
+    assert fill.take_profit == pytest.approx(2006.2)
+    assert any("risk $22.00" in m for m in bot.notifier.messages)  # 22 pips x 10 oz

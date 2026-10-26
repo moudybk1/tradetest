@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from xau_agent.backtest import Costs, _first_exit, load_csv, run_backtest, split_stats
+from xau_agent.backtest import Costs, _first_exit, load_csv, run_backtest, split_stats, summarize
 from xau_agent.config import load_config
 
 from .conftest import breakout_day, flat_5m, flat_day, history, ny_orb_day, to_1m
@@ -169,3 +169,25 @@ def test_invalid_values_rejected(tmp_path, text, match):
     path.write_text(text)
     with pytest.raises(ValueError, match=match):
         load_config(path)
+
+
+def test_atr_is_an_alias_for_rr(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("strategy:\n  exit_mode: atr\n")
+    assert load_config(path).strategy.exit_mode == "rr"
+
+
+def test_max_stop_must_exceed_min_stop(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("strategy:\n  min_stop_pips: 20\n  max_stop_pips: 10\n")
+    with pytest.raises(ValueError, match="max_stop_pips"):
+        load_config(path)
+
+
+def test_breakeven_with_variable_stops():
+    trades = pd.DataFrame({"usd": [40.0, -22.0], "pips": [40.0, -22.0], "cost_pips": [2.0, 2.0],
+                           "stop_pips": [20.0, 20.0], "target_pips": [40.0, 40.0], "risk_usd": [20.0, 20.0],
+                           "r": [2.0, -1.1], "reason": ["target", "stop"]})
+    st = summarize(trades, 10, 0.1)
+    assert st["breakeven_win_rate_pct"] == pytest.approx((1 + 0.1) / 3 * 100, abs=0.1)
+    assert st["avg_stop_pips"] == 20.0

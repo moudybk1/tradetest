@@ -69,7 +69,7 @@ def cmd_check(args) -> None:
     atr = daily_atr(hourly, s.atr_period, today)
     print(f"last closed {s.timeframe} candle: {candles.index[-1]}  daily ATR: {atr}")
     strategy = get_strategy(s.name)
-    signals = strategy.day_signals(day_candles(strategy.prepare(candles, hourly, cfg), today), today, atr, cfg)
+    signals = strategy.signals(day_candles(strategy.prepare(candles, hourly, cfg), today), today, atr, cfg)
     for sig in signals:
         if r.sizing == "fixed_lots":
             size = data.size_from_lots(r.fixed_lots, r.contract_oz)
@@ -115,6 +115,23 @@ def _load_candles(args, cfg):
     return candles
 
 
+def _apply_overrides(args, cfg) -> None:
+    if args.timeframe:
+        cfg.strategy.timeframe = args.timeframe
+    if args.exit_mode:
+        cfg.strategy.exit_mode = args.exit_mode
+    if args.rr:
+        cfg.strategy.reward_risk = args.rr
+
+
+def exits_label(cfg) -> str:
+    s = cfg.strategy
+    if s.exit_mode == "fixed_pips":
+        return f"SL {s.sl_pips} / TP {s.tp_pips} pips"
+    cap = f", max {s.max_stop_pips}" if s.max_stop_pips else ""
+    return f"RR 1:{s.reward_risk:g} (stop at setup + {s.stop_buffer_pips:g} pips, min {s.min_stop_pips:g}{cap} pips)"
+
+
 def _costs(args):
     from .backtest import Costs
 
@@ -130,13 +147,11 @@ def cmd_backtest(args) -> None:
     from .backtest import monthly, run_backtest, split_stats
 
     cfg = load_config(args.config)
-    if args.timeframe:
-        cfg.strategy.timeframe = args.timeframe
+    _apply_overrides(args, cfg)
     name = args.strategy or cfg.strategy.name
     lots = args.lots if args.lots is not None else cfg.risk.fixed_lots
     trades, stats = run_backtest(_load_candles(args, cfg), cfg, _costs(args), name, lots)
-    _print_stats(f"{name} | {cfg.strategy.timeframe} | SL {cfg.strategy.sl_pips} / TP {cfg.strategy.tp_pips} pips "
-                 f"| {lots} lot", stats)
+    _print_stats(f"{name} | {cfg.strategy.timeframe} | {exits_label(cfg)} | {lots} lot", stats)
     if args.split and not trades.empty:
         for label, part in split_stats(trades, args.split, cfg, lots).items():
             _print_stats(f"{label} ({'before' if label == 'in_sample' else 'from'} {args.split})", part)
@@ -154,8 +169,7 @@ def cmd_compare(args) -> None:
     from .config import STRATEGIES
 
     cfg = load_config(args.config)
-    if args.timeframe:
-        cfg.strategy.timeframe = args.timeframe
+    _apply_overrides(args, cfg)
     candles = _load_candles(args, cfg)
     lots = args.lots if args.lots is not None else cfg.risk.fixed_lots
     rows = []
@@ -163,6 +177,7 @@ def cmd_compare(args) -> None:
         trades, st = run_backtest(candles, cfg, _costs(args), name, lots)
         row = {"strategy": name, "trades": st.get("trades", 0), "per_week": st.get("trades_per_week", "-"),
                "win%": st.get("win_rate_pct", "-"), "breakeven%": st.get("breakeven_win_rate_pct", "-"),
+               "avg_SL_pips": st.get("avg_stop_pips", "-"),
                "net_$": st.get(f"net_usd_at_{lots}_lot", "-"), "PF": st.get("profit_factor", "-"),
                "max_DD_$": st.get("max_drawdown_usd", "-"), "lose_streak": st.get("worst_losing_streak", "-")}
         if args.split:
@@ -172,7 +187,7 @@ def cmd_compare(args) -> None:
             row["OOS_net_$"] = oos.get(f"net_usd_at_{lots}_lot", "-")
         rows.append(row)
     s = cfg.strategy
-    print(f"\n{s.timeframe} signals | SL {s.sl_pips} / TP {s.tp_pips} pips | {lots} lot | "
+    print(f"\n{s.timeframe} signals | {exits_label(cfg)} | {lots} lot | "
           f"max {cfg.risk.max_trades_per_day} trades/day | flatten {s.flatten_utc:%H:%M} UTC")
     print(pd.DataFrame(rows).set_index("strategy").to_string())
 
@@ -233,6 +248,8 @@ def main() -> None:
         p.add_argument("--lots", type=float, help="lot size for $ results (default: risk.fixed_lots)")
         p.add_argument("--split", help="YYYY-MM-DD: also report results before/after this date (out-of-sample)")
         p.add_argument("--timeframe", choices=["1m", "5m", "15m"], help="override strategy.timeframe")
+        p.add_argument("--exit-mode", choices=["rr", "fixed_pips"], help="override strategy.exit_mode")
+        p.add_argument("--rr", type=float, help="override strategy.reward_risk (rr exit mode)")
 
     p = sub.add_parser("backtest", help="backtest one strategy")
     data_args(p)
