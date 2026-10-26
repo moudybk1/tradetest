@@ -11,6 +11,7 @@ max trades per day, risk rules). Strategies:
   ny_orb          first close beyond the New York opening range (09:30-10:00 New York time)
   asian_sweep     London takes out the Asian high/low, then closes back inside -> trade the reversal
   trend_pullback  H1 EMA trend + M5 pullback to the EMA that closes back in the trend direction
+  ifvg_hammer     hammer (or shooting star), then a candle closes through a fair value gap -> enter
 """
 
 from __future__ import annotations
@@ -248,6 +249,110 @@ def trend_pullback(day_bars: pd.DataFrame, day: pd.Timestamp, atr: float | None,
     return sorted(signals, key=lambda sig: sig.candle_time)
 
 
+# ---- 5. Hammer + IFVG ---------------------------------------------------------------------------
+def candle_shapes(bars: pd.DataFrame, cfg: Config) -> tuple[pd.Series, pd.Series]:
+    """(hammer, shooting_star) flags. A shooting star is the hammer turned upside down (for shorts)."""
+    p, pip = cfg.ifvg_hammer, cfg.strategy.pip_size
+    o, h, low, c = bars["open"], bars["high"], bars["low"], bars["close"]
+    rng = h - low
+    body = (c - o).abs()
+    lower = pd.concat([o, c], axis=1).min(axis=1) - low
+    upper = h - pd.concat([o, c], axis=1).max(axis=1)
+    big_enough = rng >= p.hammer_min_range_pips * pip
+    hammer = big_enough & (lower >= p.hammer_wick_ratio * body) & (upper <= p.hammer_max_opposite_wick * rng)
+    star = big_enough & (upper >= p.hammer_wick_ratio * body) & (lower <= p.hammer_max_opposite_wick * rng)
+    if p.hammer_swing_bars > 0:
+        hammer &= low <= low.rolling(p.hammer_swing_bars, min_periods=1).min()
+        star &= h >= h.rolling(p.hammer_swing_bars, min_periods=1).max()
+    return hammer, star
+
+
+def prepare_ifvg_hammer(bars: pd.DataFrame, hourly: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+    """Mark, bar by bar and using only the past:
+
+    ifvg_long   this candle CLOSED above a bearish FVG (gap left by a drop) -> it is now a bullish IFVG
+    ifvg_short  this candle CLOSED below a bullish FVG -> bearish IFVG
+    hammer_low  low of the most recent hammer in the last N candles, NaN if none or if price has
+                traded below it since (a hammer whose low breaks has failed). star_high: the mirror.
+    """
+    p, pip = cfg.ifvg_hammer, cfg.strategy.pip_size
+    out = bars.copy()
+    hammer, star = candle_shapes(out, cfg)
+    o, h, low, c = (out[k].to_numpy() for k in ("open", "high", "low", "close"))
+    n = len(out)
+    ifvg_long, ifvg_short = np.zeros(n, bool), np.zeros(n, bool)
+    zone_lo, zone_hi = np.full(n, np.nan), np.full(n, np.nan)
+    hammer_low, star_high = np.full(n, np.nan), np.full(n, np.nan)
+    bear_fvgs: list[tuple[int, float, float]] = []  # (formed at, bottom, top)
+    bull_fvgs: list[tuple[int, float, float]] = []
+    min_gap = p.min_fvg_pips * pip
+    last_h = last_s = None  # (index, level)
+    hammer_arr, star_arr = hammer.to_numpy(), star.to_numpy()
+
+    for i in range(n):
+        # 1) Inversions: this candle's close goes through an FVG that formed earlier.
+        bear_fvgs = [g for g in bear_fvgs if i - g[0] <= p.fvg_lookback_bars]
+        bull_fvgs = [g for g in bull_fvgs if i - g[0] <= p.fvg_lookback_bars]
+        inverted = [g for g in bear_fvgs if c[i] > g[2]]
+        if inverted:
+            ifvg_long[i] = True
+            zone_lo[i], zone_hi[i] = inverted[-1][1], inverted[-1][2]
+            bear_fvgs = [g for g in bear_fvgs if g not in inverted]
+        inverted = [g for g in bull_fvgs if c[i] < g[1]]
+        if inverted:
+            ifvg_short[i] = True
+            zone_lo[i], zone_hi[i] = inverted[-1][1], inverted[-1][2]
+            bull_fvgs = [g for g in bull_fvgs if g not in inverted]
+        # 2) New FVG completed by this candle (it is candle 3 of the pattern).
+        if i >= 2:
+            if low[i - 2] - h[i] >= min_gap:
+                bear_fvgs.append((i, h[i], low[i - 2]))
+            if low[i] - h[i - 2] >= min_gap:
+                bull_fvgs.append((i, h[i - 2], low[i]))
+        # 3) Most recent hammer / shooting star, invalidated once its extreme is taken out.
+        if hammer_arr[i]:
+            last_h = (i, low[i])
+        elif last_h and low[i] < last_h[1]:
+            last_h = None
+        if star_arr[i]:
+            last_s = (i, h[i])
+        elif last_s and h[i] > last_s[1]:
+            last_s = None
+        if last_h and i - last_h[0] <= p.hammer_max_bars_before:
+            hammer_low[i] = last_h[1]
+        if last_s and i - last_s[0] <= p.hammer_max_bars_before:
+            star_high[i] = last_s[1]
+
+    out["hammer"], out["star"] = hammer_arr, star_arr
+    out["ifvg_long"], out["ifvg_short"] = ifvg_long, ifvg_short
+    out["ifvg_low"], out["ifvg_high"] = zone_lo, zone_hi
+    out["hammer_low"], out["star_high"] = hammer_low, star_high
+    return out
+
+
+def ifvg_hammer(day_bars: pd.DataFrame, day: pd.Timestamp, atr: float | None, cfg: Config) -> list[Signal]:
+    """Hammer, then an IFVG appears (within hammer_max_bars_before candles) -> enter at that close."""
+    p, s = cfg.ifvg_hammer, cfg.strategy
+    sl_distance = s.sl_pips * s.pip_size
+    check_stop = s.exit_mode == "fixed_pips" and p.require_stop_beyond_hammer
+    signals = []
+    for start, end in parse_sessions(p.sessions_utc):
+        for ts, row in _window(day_bars, _at(day, start), _at(day, end)).iterrows():
+            close = float(row["close"])
+            zone = {"ifvg_low": float(row["ifvg_low"]), "ifvg_high": float(row["ifvg_high"])}
+            if row["ifvg_long"] and not row["ifvg_short"] and not np.isnan(row["hammer_low"]):
+                level = float(row["hammer_low"])
+                if not check_stop or level > close - sl_distance:
+                    signals.append(make_signal("ifvg_hammer", "long", close, level, ts, atr, s,
+                                               hammer_low=level, **zone))
+            elif row["ifvg_short"] and not row["ifvg_long"] and not np.isnan(row["star_high"]):
+                level = float(row["star_high"])
+                if not check_stop or level < close + sl_distance:
+                    signals.append(make_signal("ifvg_hammer", "short", close, level, ts, atr, s,
+                                               shooting_star_high=level, **zone))
+    return sorted(signals, key=lambda sig: sig.candle_time)
+
+
 @dataclass(frozen=True)
 class Strategy:
     name: str
@@ -260,6 +365,7 @@ REGISTRY = {
     "ny_orb": Strategy("ny_orb", _no_prepare, ny_orb),
     "asian_sweep": Strategy("asian_sweep", _no_prepare, asian_sweep),
     "trend_pullback": Strategy("trend_pullback", prepare_pullback, trend_pullback),
+    "ifvg_hammer": Strategy("ifvg_hammer", prepare_ifvg_hammer, ifvg_hammer),
 }
 
 

@@ -130,6 +130,8 @@ def cmd_backtest(args) -> None:
     from .backtest import monthly, run_backtest, split_stats
 
     cfg = load_config(args.config)
+    if args.timeframe:
+        cfg.strategy.timeframe = args.timeframe
     name = args.strategy or cfg.strategy.name
     lots = args.lots if args.lots is not None else cfg.risk.fixed_lots
     trades, stats = run_backtest(_load_candles(args, cfg), cfg, _costs(args), name, lots)
@@ -152,20 +154,22 @@ def cmd_compare(args) -> None:
     from .config import STRATEGIES
 
     cfg = load_config(args.config)
+    if args.timeframe:
+        cfg.strategy.timeframe = args.timeframe
     candles = _load_candles(args, cfg)
     lots = args.lots if args.lots is not None else cfg.risk.fixed_lots
     rows = []
     for name in STRATEGIES:
         trades, st = run_backtest(candles, cfg, _costs(args), name, lots)
-        row = {"strategy": name, "trades": st.get("trades", 0), "per_week": st.get("trades_per_week"),
-               "win%": st.get("win_rate_pct"), "breakeven%": st.get("breakeven_win_rate_pct"),
-               "net_$": st.get(f"net_usd_at_{lots}_lot"), "PF": st.get("profit_factor"),
-               "max_DD_$": st.get("max_drawdown_usd"), "lose_streak": st.get("worst_losing_streak")}
-        if args.split and not trades.empty:
-            oos = split_stats(trades, args.split, cfg, lots)["out_of_sample"]
+        row = {"strategy": name, "trades": st.get("trades", 0), "per_week": st.get("trades_per_week", "-"),
+               "win%": st.get("win_rate_pct", "-"), "breakeven%": st.get("breakeven_win_rate_pct", "-"),
+               "net_$": st.get(f"net_usd_at_{lots}_lot", "-"), "PF": st.get("profit_factor", "-"),
+               "max_DD_$": st.get("max_drawdown_usd", "-"), "lose_streak": st.get("worst_losing_streak", "-")}
+        if args.split:
+            oos = split_stats(trades, args.split, cfg, lots)["out_of_sample"] if not trades.empty else {}
             row["OOS_trades"] = oos.get("trades", 0)
-            row["OOS_win%"] = oos.get("win_rate_pct")
-            row["OOS_net_$"] = oos.get(f"net_usd_at_{lots}_lot")
+            row["OOS_win%"] = oos.get("win_rate_pct", "-")
+            row["OOS_net_$"] = oos.get(f"net_usd_at_{lots}_lot", "-")
         rows.append(row)
     s = cfg.strategy
     print(f"\n{s.timeframe} signals | SL {s.sl_pips} / TP {s.tp_pips} pips | {lots} lot | "
@@ -228,6 +232,7 @@ def main() -> None:
         p.add_argument("--commission", type=float, default=0.0, help="round-turn commission in $ per 1.0 lot")
         p.add_argument("--lots", type=float, help="lot size for $ results (default: risk.fixed_lots)")
         p.add_argument("--split", help="YYYY-MM-DD: also report results before/after this date (out-of-sample)")
+        p.add_argument("--timeframe", choices=["1m", "5m", "15m"], help="override strategy.timeframe")
 
     p = sub.add_parser("backtest", help="backtest one strategy")
     data_args(p)

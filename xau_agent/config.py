@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-STRATEGIES = ("asian_breakout", "ny_orb", "asian_sweep", "trend_pullback")
+STRATEGIES = ("asian_breakout", "ny_orb", "asian_sweep", "trend_pullback", "ifvg_hammer")
 
 
 @dataclass
@@ -88,6 +88,24 @@ class TrendPullbackConfig:
 
 
 @dataclass
+class IfvgHammerConfig:
+    sessions_utc: str = "07:00-11:00,13:00-17:00"
+    # FVG = 3-candle gap. It is "inverted" (IFVG) when a candle CLOSES through it from the other side.
+    fvg_lookback_bars: int = 30
+    min_fvg_pips: float = 3
+    # The IFVG must appear on the hammer candle or within this many candles after it.
+    hammer_max_bars_before: int = 6
+    # Hammer: long lower wick >= wick_ratio x body, upper wick <= max_opposite_wick x candle range.
+    hammer_wick_ratio: float = 2.0
+    hammer_max_opposite_wick: float = 0.25
+    hammer_min_range_pips: float = 5
+    # The hammer's low must be the lowest low of the last N candles (0 = off).
+    hammer_swing_bars: int = 10
+    # fixed_pips: skip if the hammer's low is beyond the stop (the stop would sit inside the wick).
+    require_stop_beyond_hammer: bool = True
+
+
+@dataclass
 class RiskConfig:
     # percent = size from risk_per_trade_pct. fixed_lots = always trade fixed_lots.
     sizing: str = "fixed_lots"
@@ -135,6 +153,7 @@ class Config:
     ny_orb: NYOrbConfig = field(default_factory=NYOrbConfig)
     asian_sweep: AsianSweepConfig = field(default_factory=AsianSweepConfig)
     trend_pullback: TrendPullbackConfig = field(default_factory=TrendPullbackConfig)
+    ifvg_hammer: IfvgHammerConfig = field(default_factory=IfvgHammerConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     paper: PaperConfig = field(default_factory=PaperConfig)

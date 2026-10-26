@@ -26,6 +26,20 @@ a stop-out loses about $25 plus spread, a target wins about $50 minus spread.
 | `asian_sweep` | London pushes through the Asian high (or low), then a candle closes back inside → trade the reversal. Skipped if the sweep wick doesn't fit inside the 25-pip stop | 07:00-10:00 |
 | `trend_pullback` | H1 EMA50 vs EMA200 sets the direction; a candle dips to the EMA20 and closes back in the trend. Skipped if the recent swing is beyond the stop | 07:00-11:00, 13:00-17:00 |
 | `asian_breakout` | first close beyond the Asian (00:00-07:00) range, with ATR filters | 07:00-16:00 |
+| `ifvg_hammer` | a hammer at a swing low, then within 6 candles a candle **closes above a bearish fair value gap** (the FVG is inverted = IFVG) → long at that close. Shorts are the mirror: shooting star, then a close below a bullish FVG | 07:00-11:00, 13:00-17:00 |
+
+`ifvg_hammer` definitions (all adjustable in `config.yaml` → `ifvg_hammer`):
+- **FVG:** 3 candles where candle 1's low is above candle 3's high (bearish gap) or candle 1's high is
+  below candle 3's low (bullish gap), at least `min_fvg_pips` wide, formed in the last `fvg_lookback_bars`.
+- **IFVG:** the first candle that *closes* through that gap from the other side. Entry is at that close,
+  without waiting for a retest.
+- **Hammer:** candle range at least 5 pips, lower wick at least 2× the body, upper wick at most 25% of the
+  range, and its low is the lowest of the last 10 candles. If price trades below the hammer's low
+  before the IFVG, the hammer no longer counts.
+- With `require_stop_beyond_hammer: true`, the trade is skipped when the hammer's low is more than
+  25 pips under the entry, because the stop would sit inside the wick. On M5 gold that is nearly
+  always the case, so test it on M1 (`--timeframe 1m`), or set it to `false` and accept the stop
+  inside the wick.
 
 Exits: `exit_mode: fixed_pips` keeps SL/TP at exactly `sl_pips` / `tp_pips` from the real entry price.
 `exit_mode: atr` puts the stop at the setup's chart level and the target at `reward_risk` × stop.
@@ -80,6 +94,9 @@ broker's time zone), or Dukascopy CSV exports (no spread column, so `--spread-pi
 ```bash
 # all four strategies side by side; --split = out-of-sample check from that date
 python -m xau_agent compare --csv data/xauusd_m1.csv --split 2026-01-01 --slippage-pips 0.5 --commission 0
+
+# same comparison with 1-minute signals (needed for ifvg_hammer with a 25-pip stop)
+python -m xau_agent compare --csv data/xauusd_m1.csv --timeframe 1m --split 2026-01-01
 
 # one strategy in detail: monthly $ and every trade to CSV
 python -m xau_agent backtest --csv data/xauusd_m1.csv --strategy asian_sweep --split 2026-01-01 --trades-out trades.csv
@@ -139,7 +156,7 @@ https://app.hyperliquid.xyz/API, which can trade but cannot withdraw) in `.env`,
 
 ```
 xau_agent/
-  strategy.py        the four triggers (pure functions, shared with the backtest)
+  strategy.py        the five triggers (pure functions, shared with the backtest)
   backtest.py        M1-precision backtest engine, CSV loaders
   risk.py            hard risk rules
   agent.py           Claude review: news search + take/skip decision

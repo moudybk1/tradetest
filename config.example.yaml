@@ -26,7 +26,7 @@ hyperliquid:
   slippage: 0.003
 
 strategy:
-  # asian_breakout | ny_orb | asian_sweep | trend_pullback   (compare them: python -m xau_agent compare ...)
+  # asian_breakout | ny_orb | asian_sweep | trend_pullback | ifvg_hammer   (compare: python -m xau_agent compare ...)
   name: ny_orb
   # Signal candles: 1m or 5m for scalping, 15m for the original Asian breakout.
   timeframe: 5m
@@ -81,6 +81,25 @@ trend_pullback:
   trend_slow: 200
   swing_bars: 6
   cooldown_bars: 6
+
+ifvg_hammer:
+  # Hammer (long lower wick at a swing low), then within a few candles a candle CLOSES above a
+  # bearish fair value gap (the gap is "inverted" = IFVG) -> long at that close. Shorts: the mirror
+  # (shooting star, then a close below a bullish FVG).
+  sessions_utc: "07:00-11:00,13:00-17:00"
+  # FVG = gap between candle 1 and candle 3 of a strong move. Ignore gaps older / smaller than this.
+  fvg_lookback_bars: 30
+  min_fvg_pips: 3
+  # The IFVG must close on the hammer candle itself or within this many candles after it.
+  hammer_max_bars_before: 6
+  # Hammer shape: long wick >= wick_ratio x body, other wick <= max_opposite_wick x candle range.
+  hammer_wick_ratio: 2.0
+  hammer_max_opposite_wick: 0.25
+  hammer_min_range_pips: 5
+  # Hammer low must be the lowest low of the last N candles (0 = off).
+  hammer_swing_bars: 10
+  # Skip if the hammer's low is further than sl_pips from entry (the stop would sit inside the wick).
+  require_stop_beyond_hammer: true
 
 risk:
   # fixed_lots = every entry uses fixed_lots. percent = size from risk_per_trade_pct.

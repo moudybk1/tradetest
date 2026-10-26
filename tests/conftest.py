@@ -153,3 +153,28 @@ def to_1m(df5: pd.DataFrame) -> pd.DataFrame:
     """Split each 5m bar into five 1m bars with the same OHLC (good enough for exit tests)."""
     parts = [df5.set_axis(df5.index + pd.Timedelta(minutes=i)) for i in range(5)]
     return pd.concat(parts).sort_index()
+
+
+def ifvg_hammer_day(day: pd.Timestamp, hammer_low: float = 1999.9) -> pd.DataFrame:
+    """Drop that leaves a bearish FVG (2001.0-2001.6), hammer at the low, then a close above the gap.
+
+    08:00-08:10 drop (FVG between the 08:00 low and the 08:10 high), 08:15 hammer,
+    08:20 back into the gap, 08:25 closes at 2001.8 above the gap top -> bullish IFVG -> long.
+    """
+    df = flat_5m(day, base=2002.0, half_range=0.2)
+    t = f"{day.date()}"
+    set_bar(df, f"{t} 08:00", 2002.0, 2002.1, 2001.6, 2001.7)
+    set_bar(df, f"{t} 08:05", 2001.7, 2001.7, 2000.4, 2000.5)
+    set_bar(df, f"{t} 08:10", 2000.5, 2001.0, 2000.3, 2000.6)
+    set_bar(df, f"{t} 08:15", 2000.4, 2000.55, hammer_low, 2000.5)  # hammer
+    set_bar(df, f"{t} 08:20", 2000.5, 2001.3, 2000.45, 2001.2)
+    set_bar(df, f"{t} 08:25", 2001.2, 2001.9, 2001.15, 2001.8)      # IFVG close
+    return df
+
+
+def mirror(df: pd.DataFrame, around: float = 2002.0) -> pd.DataFrame:
+    """Flip prices upside down around `around`: a long setup becomes the matching short setup."""
+    out = df.copy()
+    out["open"], out["close"] = 2 * around - df["open"], 2 * around - df["close"]
+    out["high"], out["low"] = 2 * around - df["low"], 2 * around - df["high"]
+    return out
